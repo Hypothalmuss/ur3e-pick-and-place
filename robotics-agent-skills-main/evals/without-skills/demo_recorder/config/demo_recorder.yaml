@@ -1,0 +1,6 @@
+demo_recorder:
+  ros__parameters:
+    save_directory: '/tmp/demo_recordings'
+    camera_topic: '/camera/color/image_raw'
+    joint_states_topic: '/joint_states'
+    status_publish_rate: 1.0

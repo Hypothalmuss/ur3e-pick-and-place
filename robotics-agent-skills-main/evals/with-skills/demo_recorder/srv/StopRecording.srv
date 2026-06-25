@@ -1,0 +1,12 @@
+# Request to stop recording and save the current episode to disk.
+# Idempotent: calling while not recording returns success=false with a
+# descriptive message and no side-effects.
+bool success_label          # Whether the demonstration was successful
+string notes                # Optional operator notes about the episode
+---
+bool success
+string message
+string file_path
+uint32 num_timesteps
+float64 duration_sec
+uint32 dropped_frames

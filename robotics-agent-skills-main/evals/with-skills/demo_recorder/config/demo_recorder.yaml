@@ -1,0 +1,66 @@
+# ===========================================================================
+# demo_recorder configuration
+# ===========================================================================
+# All tunable knobs are externalised here so operators can reconfigure
+# without touching code (Configuration Over Code principle).
+#
+# Parameters can also be changed at runtime via:
+#   ros2 param set /demo_recorder <param> <value>
+# ===========================================================================
+
+demo_recorder:
+  ros__parameters:
+
+    # ---- Topic names (remappable) -----------------------------------------
+    camera_topic: "/camera/wrist/color/image_raw"
+    joint_states_topic: "/franka/joint_states"
+
+    # ---- Storage ----------------------------------------------------------
+    save_directory: "/tmp/demo_recordings"
+
+    # ---- Recording rates --------------------------------------------------
+    # Target capture rate for recording timesteps (Hz).
+    # This is decoupled from sensor publishing rates to avoid coupling
+    # different-rate subsystems (Separation of Rates principle).
+    capture_rate_hz: 30.0
+
+    # Status publishing rate for the UI (Hz).
+    status_publish_rate_hz: 2.0
+
+    # ---- Sensor health / watchdog -----------------------------------------
+    # If no message arrives on a sensor topic within this timeout (seconds),
+    # the sensor is considered dead and recording pauses (Fail-Safe Default).
+    sensor_timeout_sec: 1.0
+
+    # ---- Bounded buffers --------------------------------------------------
+    # Maximum number of messages held per sensor before oldest are dropped.
+    # Keeps memory bounded; a metric is incremented on overflow.
+    buffer_size: 2
+
+    # ---- Synchronisation --------------------------------------------------
+    # Maximum allowable time offset (ms) between the most-recent camera and
+    # joint-state messages when assembling a timestep.  If exceeded the
+    # timestep is skipped and a metric is incremented.
+    max_sync_offset_ms: 50.0
+
+    # ---- Quality gate -----------------------------------------------------
+    # Minimum number of timesteps for an episode to be considered valid.
+    # Episodes shorter than this emit a warning on save.
+    min_episode_timesteps: 10
+
+    # Maximum allowed fraction of dropped frames before a quality warning.
+    max_dropped_frame_ratio: 0.05
+
+    # ---- Image handling ---------------------------------------------------
+    # Encoding for cv_bridge conversion.  Use 'bgr8' for colour,
+    # 'mono8' for greyscale, 'passthrough' to keep original.
+    image_encoding: "bgr8"
+
+    # Whether to save full images in the episode (true) or only metadata
+    # like shape/dtype (false).  Saving images increases file size
+    # significantly.
+    save_images: true
+
+    # ---- Franka arm specifics ---------------------------------------------
+    # Expected number of joints.  Used for validation (Franka Panda = 7).
+    expected_num_joints: 7

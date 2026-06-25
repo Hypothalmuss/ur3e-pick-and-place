@@ -1,0 +1,9 @@
+# Request to begin recording a new demonstration episode.
+# Idempotent: calling while already recording returns success=false with a
+# descriptive message and no side-effects.
+string task_name
+string operator_name
+---
+bool success
+string message
+uint32 episode_id

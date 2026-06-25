@@ -1,0 +1,5 @@
+string task_name
+string operator_name
+---
+bool success
+string message

@@ -1,0 +1,5 @@
+int32 aruco_id
+string class_name
+---
+bool success
+string message
