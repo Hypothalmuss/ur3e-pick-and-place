@@ -15,6 +15,18 @@ colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash
 ```
 
+## Launch (Feature 2)
+
+```bash
+# Terminal 1: Gazebo + robot bringup
+export LIBGL_ALWAYS_SOFTWARE=1
+source /usr/share/gazebo/setup.sh
+export PATH="/usr/bin:$PATH"  # if Conda active
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch ur3e_sim_bringup bringup.launch.py
+```
+
 ## Packages
 
 | Package | Type | Entry Points |

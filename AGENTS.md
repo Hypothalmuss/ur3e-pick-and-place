@@ -18,6 +18,13 @@
 - Set `LIBGL_ALWAYS_SOFTWARE=1` before launching Gazebo to avoid GPU OpenGL crashes.
 - Source `/usr/share/gazebo/setup.sh` before `ros2 launch` to avoid RTShader assertion.
 - If Conda is active, run `export PATH="/usr/bin:$PATH"` before any ROS 2 command.
+- Use `gzserver.launch.py` + `gzclient.launch.py` separately (not `gazebo.launch.py`) to pass custom `world` arg — `gazebo.launch.py` doesn't forward `world`.
+
+## URDF / xacro
+
+- `ur_description` provides `ur_macro.xacro` with the `ur_robot` macro. Call it directly rather than via `ur.urdf.xacro` for full control (avoids ground_plane, lets you add extra ros2_control blocks).
+- Add extra ros2_control blocks directly in xacro — the `gazebo_ros2_control` plugin (single instance) handles all blocks.
+- Robotiq 2F-85 gripper: set `include_ros2_control="false"` to skip its ros2_control (no Gazebo `sim_gazebo` support). Add a separate `<ros2_control>` block with `gazebo_ros2_control/GazeboSystem` for the left_knuckle_joint; `<mimic>` tags handle the rest.
 
 ## Coding Conventions
 
