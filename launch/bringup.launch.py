@@ -69,10 +69,23 @@ def generate_launch_description():
             executable='spawn_entity.py',
             arguments=[
                 '-file', PathJoinSubstitution([
+                    FindPackageShare('ur3e_sim_bringup'), 'urdf', 'table.urdf'
+                ]),
+                '-entity', 'table',
+                '-x', '0.5', '-y', '0', '-z', '0.745',
+            ],
+            output='screen',
+        ),
+
+        Node(
+            package='gazebo_ros',
+            executable='spawn_entity.py',
+            arguments=[
+                '-file', PathJoinSubstitution([
                     FindPackageShare('ur3e_sim_bringup'), 'urdf', 'target_cube.urdf'
                 ]),
                 '-entity', 'target_cube',
-                '-x', '0.35', '-y', '0', '-z', '0.015',
+                '-x', '0.35', '-y', '0', '-z', '0.78',
             ],
             output='screen',
         ),
