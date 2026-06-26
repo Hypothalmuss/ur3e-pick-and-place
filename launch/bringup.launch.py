@@ -65,6 +65,19 @@ def generate_launch_description():
         ),
 
         Node(
+            package='gazebo_ros',
+            executable='spawn_entity.py',
+            arguments=[
+                '-file', PathJoinSubstitution([
+                    FindPackageShare('ur3e_sim_bringup'), 'urdf', 'target_cube.urdf'
+                ]),
+                '-entity', 'target_cube',
+                '-x', '0.35', '-y', '0', '-z', '0.015',
+            ],
+            output='screen',
+        ),
+
+        Node(
             package='controller_manager',
             executable='spawner',
             arguments=['joint_state_broadcaster'],
