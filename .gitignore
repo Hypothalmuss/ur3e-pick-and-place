@@ -8,3 +8,6 @@ __pycache__/
 *.swp
 *.pt
 .yolov8/
+frames_*.gv
+frames_*.pdf
+MEMORY.md
