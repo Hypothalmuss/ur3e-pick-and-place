@@ -14,4 +14,9 @@ def generate_launch_description():
             executable='pick_place_bt_node',
             output='screen',
         ),
+        Node(
+            package='ur3e_motion',
+            executable='pick_place_orchestrator',
+            output='screen',
+        ),
     ])

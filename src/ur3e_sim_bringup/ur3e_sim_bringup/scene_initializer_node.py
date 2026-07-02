@@ -10,25 +10,47 @@ class SceneInitializerNode(Node):
     def __init__(self):
         super().__init__('scene_initializer_node')
         self._done = False
+        self._step = 0
         self._client = self.create_client(ApplyPlanningScene, '/apply_planning_scene')
         self._retry_counter = 0
+        self._future = None
         self._timer = self.create_timer(1.0, self._on_timer)
 
     def _on_timer(self) -> None:
-        if not self._client.wait_for_service(timeout_sec=0.5):
-            self._retry_counter += 1
-            if self._retry_counter > 30:
-                self.get_logger().error('Planning scene service unavailable after 30s')
-                self._done = True
-                self._timer.cancel()
+        if self._step == 0:
+            if not self._client.wait_for_service(timeout_sec=0.5):
+                self._retry_counter += 1
+                if self._retry_counter > 30:
+                    self.get_logger().error('Planning scene service unavailable after 30s')
+                    self._done = True
+                    self._timer.cancel()
+                return
+            self._timer.cancel()
+            self.get_logger().info('Connected to planning scene service')
+            self._send_ground_plane()
+            self._step = 1
+            self._timer.reset()
             return
 
-        self._timer.cancel()
-        self.get_logger().info('Connected to planning scene service')
+        if self._step == 1:
+            if self._future is not None and self._future.done():
+                if self._future.result() and self._future.result().success:
+                    self.get_logger().info('ground_plane added to planning scene')
+                else:
+                    self.get_logger().error('Failed to add ground_plane')
+                self._future = None
+                self._send_target_cube()
+                self._step = 2
+            return
 
-        self._send_ground_plane()
-        self._send_target_cube()
-        self._done = True
+        if self._step == 2:
+            if self._future is not None and self._future.done():
+                if self._future.result() and self._future.result().success:
+                    self.get_logger().info('target_cube added to planning scene')
+                else:
+                    self.get_logger().error('Failed to add target_cube')
+                self._done = True
+                self._timer.cancel()
 
     def _send_ground_plane(self) -> None:
         obj = CollisionObject()
@@ -46,12 +68,7 @@ class SceneInitializerNode(Node):
         req.scene.is_diff = True
         req.scene.world.collision_objects.append(obj)
 
-        future = self._client.call_async(req)
-        rclpy.spin_until_future_complete(self, future)
-        if future.result() and future.result().success:
-            self.get_logger().info('ground_plane added to planning scene')
-        else:
-            self.get_logger().error('Failed to add ground_plane')
+        self._future = self._client.call_async(req)
 
     def _send_target_cube(self) -> None:
         obj = CollisionObject()
@@ -71,12 +88,7 @@ class SceneInitializerNode(Node):
         req.scene.is_diff = True
         req.scene.world.collision_objects.append(obj)
 
-        future = self._client.call_async(req)
-        rclpy.spin_until_future_complete(self, future)
-        if future.result() and future.result().success:
-            self.get_logger().info('target_cube added to planning scene')
-        else:
-            self.get_logger().error('Failed to add target_cube')
+        self._future = self._client.call_async(req)
 
 
 def main(args=None):

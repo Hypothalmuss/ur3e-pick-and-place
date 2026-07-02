@@ -65,32 +65,6 @@ def generate_launch_description():
         ),
 
         Node(
-            package='gazebo_ros',
-            executable='spawn_entity.py',
-            arguments=[
-                '-file', PathJoinSubstitution([
-                    FindPackageShare('ur3e_sim_bringup'), 'urdf', 'table.urdf'
-                ]),
-                '-entity', 'table',
-                '-x', '0.5', '-y', '0', '-z', '0.745',
-            ],
-            output='screen',
-        ),
-
-        Node(
-            package='gazebo_ros',
-            executable='spawn_entity.py',
-            arguments=[
-                '-file', PathJoinSubstitution([
-                    FindPackageShare('ur3e_sim_bringup'), 'urdf', 'target_cube.urdf'
-                ]),
-                '-entity', 'target_cube',
-                '-x', '0.35', '-y', '0', '-z', '0.78',
-            ],
-            output='screen',
-        ),
-
-        Node(
             package='controller_manager',
             executable='spawner',
             arguments=['joint_state_broadcaster'],
@@ -110,4 +84,25 @@ def generate_launch_description():
             arguments=['gripper_controller'],
             output='screen',
         ),
+
+        Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            arguments=['--x', '0.15', '--y', '0', '--z', '3.0',
+                       '--roll', '0', '--pitch', '0', '--yaw', '0',
+                       '--frame-id', 'world', '--child-frame-id', 'camera_link'],
+        ),
+
+        Node(
+            package='ur3e_perception',
+            executable='perception_node',
+            output='screen',
+        ),
+
+        Node(
+            package='ur3e_end_effectors',
+            executable='gripper_state_node',
+            output='screen',
+        ),
+
     ])

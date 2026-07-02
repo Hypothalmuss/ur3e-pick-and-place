@@ -32,10 +32,10 @@ class PerceptionNode(Node):
         self._fx = 525.0
         self._fy = 525.0
 
-        self._camera_x = 0.5
+        self._camera_x = 0.15
         self._camera_y = 0.0
-        self._camera_z = 1.2
-        self._table_z = 0.745
+        self._camera_z = 3.0
+        self._table_z = 0.0
 
     def _info_cb(self, msg: CameraInfo):
         self._cx = msg.k[2]
@@ -55,9 +55,15 @@ class PerceptionNode(Node):
 
         hsv = cv2.cvtColor(cv_img, cv2.COLOR_BGR2HSV)
 
-        lower = np.array([5, 100, 100])
-        upper = np.array([20, 255, 255])
-        mask = cv2.inRange(hsv, lower, upper)
+        lower0 = np.array([0, 40, 40])
+        upper0 = np.array([30, 255, 255])
+        mask0 = cv2.inRange(hsv, lower0, upper0)
+
+        lower1 = np.array([160, 40, 40])
+        upper1 = np.array([180, 255, 255])
+        mask1 = cv2.inRange(hsv, lower1, upper1)
+
+        mask = cv2.bitwise_or(mask0, mask1)
 
         kernel = np.ones((5, 5), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
@@ -69,9 +75,12 @@ class PerceptionNode(Node):
         detected.header.stamp = msg.header.stamp
         detected.header.frame_id = 'base_link'
 
+        white = cv2.countNonZero(mask)
+        self.get_logger().info(f'Mask pixels: {white}/{mask.shape[0]*mask.shape[1]}, contours: {len(contours)}')
+
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            if area < 50:
+            if area < 10:
                 continue
 
             M = cv2.moments(cnt)
