@@ -7,6 +7,7 @@ from std_msgs.msg import Float64, String
 GRIPPER_JOINT = 'robotiq_85_left_knuckle_joint'
 POSITION_CLOSED = 0.8
 POSITION_OPEN = 0.05
+POSITION_THRESHOLD = 0.01
 
 
 class GripperStateNode(Node):
@@ -15,6 +16,7 @@ class GripperStateNode(Node):
         self._pos_pub = self.create_publisher(Float64, '/gripper/position', 10)
         self._state_pub = self.create_publisher(String, '/gripper/state', 10)
         self._sub = self.create_subscription(JointState, '/joint_states', self._cb, 10)
+        self._last_pos = None
         self._last_state = 'unknown'
 
     def _cb(self, msg: JointState) -> None:
@@ -27,12 +29,15 @@ class GripperStateNode(Node):
                     state = 'closed'
                 elif pos < POSITION_OPEN + 0.05:
                     state = 'open'
-                else:
+                elif self._last_pos is not None and abs(pos - self._last_pos) > POSITION_THRESHOLD:
                     state = 'moving'
+                else:
+                    state = 'partially_open'
 
                 if state != self._last_state:
                     self._state_pub.publish(String(data=state))
                     self._last_state = state
+                self._last_pos = pos
                 break
 
 

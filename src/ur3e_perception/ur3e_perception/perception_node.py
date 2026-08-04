@@ -6,6 +6,7 @@ from sensor_msgs.msg import Image, CameraInfo
 from cv_bridge import CvBridge
 import cv2
 import numpy as np
+from tf2_ros import Buffer, TransformListener
 
 from ur3e_msgs.msg import DetectedObject, DetectedObjectArray
 from geometry_msgs.msg import Pose, Point, Quaternion
@@ -16,6 +17,9 @@ class PerceptionNode(Node):
         super().__init__('perception_node')
         self._bridge = CvBridge()
         self._camera_info: CameraInfo | None = None
+
+        self._tf_buffer = Buffer()
+        self._tf_listener = TransformListener(self._tf_buffer, self)
 
         self._info_reported = False
 
@@ -31,11 +35,15 @@ class PerceptionNode(Node):
         self._cy = 240.0
         self._fx = 525.0
         self._fy = 525.0
-
-        self._camera_x = 0.15
-        self._camera_y = 0.0
-        self._camera_z = 3.0
         self._table_z = 0.0
+
+        # camera_optical_frame (X=right, Y=down, Z=forward) -> camera_link (X=forward, Y=left, Z=up)
+        #   X_body =  Z_opt,  Y_body = -X_opt,  Z_body = -Y_opt
+        self._R_opt_to_body = np.array([
+            [0, 0, 1],
+            [-1, 0, 0],
+            [0, -1, 0],
+        ])
 
     def _info_cb(self, msg: CameraInfo):
         self._cx = msg.k[2]
@@ -47,7 +55,29 @@ class PerceptionNode(Node):
                                    f'cx={self._cx:.1f}, cy={self._cy:.1f}')
             self._info_reported = True
 
+    def _get_camera_pose(self):
+        try:
+            trans = self._tf_buffer.lookup_transform(
+                'base_link', 'camera_link', rclpy.time.Time())
+        except Exception as e:
+            self.get_logger().warn(f'TF lookup failed: {e}')
+            return None
+
+        t = trans.transform.translation
+        pos = np.array([t.x, t.y, t.z])
+        q = trans.transform.rotation
+        qx, qy, qz, qw = q.x, q.y, q.z, q.w
+        R = np.array([
+            [1 - 2*(qy*qy + qz*qz), 2*(qx*qy - qz*qw), 2*(qx*qz + qy*qw)],
+            [2*(qx*qy + qz*qw), 1 - 2*(qx*qx + qz*qz), 2*(qy*qz - qx*qw)],
+            [2*(qx*qz - qy*qw), 2*(qy*qz + qx*qw), 1 - 2*(qx*qx + qy*qy)],
+        ])
+        return pos, R
+
     def _image_cb(self, msg: Image):
+        if not self._info_reported:
+            return
+
         try:
             cv_img = self._bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         except Exception:
@@ -75,8 +105,18 @@ class PerceptionNode(Node):
         detected.header.stamp = msg.header.stamp
         detected.header.frame_id = 'base_link'
 
-        white = cv2.countNonZero(mask)
-        self.get_logger().info(f'Mask pixels: {white}/{mask.shape[0]*mask.shape[1]}, contours: {len(contours)}')
+        now = self.get_clock().now()
+        if not hasattr(self, '_last_log') or (now - self._last_log).nanoseconds > 2e9:
+            self._last_log = now
+            white = cv2.countNonZero(mask)
+            self.get_logger().info(
+                f'Mask pixels: {white}/{mask.shape[0]*mask.shape[1]}, contours: {len(contours)}')
+
+        cam = self._get_camera_pose()
+        if cam is None:
+            self._pub.publish(detected)
+            return
+        cam_pos, R_link_to_base = cam
 
         for cnt in contours:
             area = cv2.contourArea(cnt)
@@ -89,27 +129,29 @@ class PerceptionNode(Node):
             uc = M['m10'] / M['m00']
             vc = M['m01'] / M['m00']
 
-            z_cam = self._camera_z - self._table_z
-            x_cam = (uc - self._cx) * z_cam / self._fx
-            y_cam = (vc - self._cy) * z_cam / self._fy
+            ray_opt = np.array([
+                (uc - self._cx) / self._fx,
+                (vc - self._cy) / self._fy,
+                1.0,
+            ])
+
+            ray_body = self._R_opt_to_body @ ray_opt
+            ray_base = R_link_to_base @ ray_body
+
+            if abs(ray_base[2]) < 1e-6:
+                continue
+            t = (self._table_z - cam_pos[2]) / ray_base[2]
+            world = cam_pos + t * ray_base
 
             obj = DetectedObject()
             obj.aruco_id = 0
             obj.class_name = 'cube'
             obj.confidence = 1.0
             obj.pose = Pose(
-                position=Point(
-                    x=self._camera_x + x_cam,
-                    y=self._camera_y - y_cam,
-                    z=self._table_z,
-                ),
+                position=Point(x=world[0], y=world[1], z=world[2]),
                 orientation=Quaternion(x=0.0, y=0.0, z=0.0, w=1.0),
             )
             detected.objects.append(obj)
-
-            self.get_logger().info(
-                f'Detected cube at ({obj.pose.position.x:.3f}, '
-                f'{obj.pose.position.y:.3f}, {obj.pose.position.z:.3f})')
 
         self._pub.publish(detected)
 

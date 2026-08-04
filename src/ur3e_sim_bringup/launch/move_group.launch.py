@@ -63,10 +63,13 @@ def launch_setup(context, *args, **kwargs):
     }
 
     trajectory_execution = {
-        "moveit_manage_controllers": False,
-        "trajectory_execution.allowed_execution_duration_scaling": 1.2,
-        "trajectory_execution.allowed_goal_duration_margin": 0.5,
-        "trajectory_execution.allowed_start_tolerance": 0.01,
+        "moveit_manage_controllers": True,
+        "trajectory_execution.allowed_execution_duration_scaling": 2.0,
+        "trajectory_execution.allowed_goal_duration_margin": 1.0,
+        # 0.01 rad was rejecting MoveIt's own trajectories (the arm always
+        # settles ~0.01-0.03 rad off the planned start), forcing the erratic
+        # IK-direct fallback. 0.1 rad lets planned execution actually run.
+        "trajectory_execution.allowed_start_tolerance": 0.1,
         "trajectory_execution.execution_duration_monitoring": False,
     }
 

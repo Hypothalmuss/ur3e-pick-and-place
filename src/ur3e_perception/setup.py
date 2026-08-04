@@ -15,7 +15,7 @@ setup(
         (os.path.join('share', package_name, 'launch'),
          glob('launch/*.launch.py')),
     ],
-    install_requires=['setuptools'],
+    install_requires=['setuptools', 'tf2_ros'],
     zip_safe=True,
     maintainer='user',
     maintainer_email='user@example.com',

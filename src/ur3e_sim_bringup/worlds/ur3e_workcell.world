@@ -46,9 +46,15 @@
     </model>
 
     <model name="target_cube">
-      <pose>0.3 0 0.03 0 0 0</pose>
-      <static>true</static>
+      <pose>0.4 0 0.03 0 0 0</pose>
       <link name="link">
+        <inertial>
+          <mass>0.15</mass>
+          <inertia>
+            <ixx>9.0e-5</ixx><ixy>0</ixy><ixz>0</ixz>
+            <iyy>9.0e-5</iyy><iyz>0</iyz><izz>9.0e-5</izz>
+          </inertia>
+        </inertial>
         <visual name="visual">
           <geometry>
             <box>
@@ -67,13 +73,33 @@
               <size>0.06 0.06 0.06</size>
             </box>
           </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>1.0</mu>
+                <mu2>1.0</mu2>
+              </ode>
+            </friction>
+            <!-- Bit 0 only: collides with the ground (default 0xffff) so it
+                 rests, but not with the gripper fingers (set to 0xfffe), so the
+                 gripper never knocks it. The grasp plugin handles the hold. -->
+            <collide_bitmask>0x01</collide_bitmask>
+            <contact>
+              <ode>
+                <kp>1e5</kp>
+                <kd>1.0</kd>
+                <max_vel>0.01</max_vel>
+                <min_depth>0.0</min_depth>
+              </ode>
+            </contact>
+          </surface>
         </collision>
       </link>
     </model>
 
     <model name="camera_model">
       <static>true</static>
-      <pose>0.15 0 3.0 0 0 0</pose>
+      <pose>0.15 0 3.0 0 1.5708 0</pose>
       <link name="camera_link">
         <sensor type="camera" name="camera">
           <update_rate>30.0</update_rate>

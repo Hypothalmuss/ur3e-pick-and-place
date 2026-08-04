@@ -5,6 +5,7 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, Command, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -12,19 +13,23 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time')
     gazebo_gui = LaunchConfiguration('gazebo_gui')
 
-    robot_description = Command([
+    robot_description = ParameterValue(Command([
         'xacro ',
         PathJoinSubstitution([FindPackageShare('ur3e_sim_bringup'), 'urdf', 'ur3e_with_effector.urdf.xacro']),
         ' ur_type:=', ur_type,
         ' sim_gazebo:=true',
         ' simulation_controllers:=',
         PathJoinSubstitution([FindPackageShare('ur3e_sim_bringup'), 'config', 'ros2_controllers.yaml']),
-    ])
+        ' use_mimic_plugin:=', LaunchConfiguration('use_mimic_plugin'),
+        ' use_grasp_fix:=', LaunchConfiguration('use_grasp_fix'),
+    ]), value_type=str)
 
     return LaunchDescription([
         DeclareLaunchArgument('ur_type', default_value='ur3e'),
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         DeclareLaunchArgument('gazebo_gui', default_value='true'),
+        DeclareLaunchArgument('use_mimic_plugin', default_value='true'),
+        DeclareLaunchArgument('use_grasp_fix', default_value='true'),
 
         Node(
             package='robot_state_publisher',
@@ -89,7 +94,7 @@ def generate_launch_description():
             package='tf2_ros',
             executable='static_transform_publisher',
             arguments=['--x', '0.15', '--y', '0', '--z', '3.0',
-                       '--roll', '0', '--pitch', '0', '--yaw', '0',
+                       '--roll', '0', '--pitch', '1.5708', '--yaw', '0',
                        '--frame-id', 'world', '--child-frame-id', 'camera_link'],
         ),
 
