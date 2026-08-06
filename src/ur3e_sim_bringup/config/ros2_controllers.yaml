@@ -28,28 +28,42 @@ joint_trajectory_controller:
     constraints:
       stopped_velocity_tolerance: 0.05
       goal_time: 0.0
-      # trajectory: 0.0 disables the mid-motion state-tolerance check (it was
-      # aborting direct-joint IK-fallback moves); a generous goal tolerance is
-      # still enforced at the end of each trajectory.
+      # The mid-motion tolerance used to be 0.0 (disabled) because the orchestrator
+      # sent single-point IK trajectories the controller could not track. Those are
+      # gone - every motion is now a properly time-parameterised MoveIt trajectory -
+      # so the runtime guard is back on. 0.5 rad is loose enough not to abort a
+      # valid plan but catches an arm that is running away from its trajectory.
       shoulder_pan_joint:
         goal: 0.1
-        trajectory: 0.0
+        trajectory: 0.5
       shoulder_lift_joint:
         goal: 0.1
-        trajectory: 0.0
+        trajectory: 0.5
       elbow_joint:
         goal: 0.1
-        trajectory: 0.0
+        trajectory: 0.5
       wrist_1_joint:
         goal: 0.1
-        trajectory: 0.0
+        trajectory: 0.5
       wrist_2_joint:
         goal: 0.1
-        trajectory: 0.0
+        trajectory: 0.5
       wrist_3_joint:
         goal: 0.1
-        trajectory: 0.0
+        trajectory: 0.5
 
 gripper_controller:
   ros__parameters:
     joint: robotiq_85_left_knuckle_joint
+    # The driver knuckle carries the whole mimic-driven finger linkage, so it
+    # settles a few hundredths of a radian off the commanded angle and jitters
+    # there. The default 0.01 rad goal tolerance is inside that jitter band, so
+    # the action never reported success and the state machine hung in
+    # GRASP_CLOSE. Widen the tolerance past the jitter, and treat a stall as a
+    # completed grasp - fingers stopping early because an object is in the way
+    # is the expected outcome of closing, not a failure.
+    goal_tolerance: 0.05
+    max_effort: 50.0
+    allow_stalling: true
+    stall_velocity_threshold: 0.005
+    stall_timeout: 1.0

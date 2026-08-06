@@ -4,5 +4,9 @@
       arm:
         kinematics_solver: kdl_kinematics_plugin/KDLKinematicsPlugin
         kinematics_solver_search_resolution: 0.005
-        kinematics_solver_timeout: 0.005
-        kinematics_solver_attempts: 3
+        # KDL is a random-restart numerical solver: with a 5 ms budget and 3
+        # attempts it often returned whichever branch it happened to land on,
+        # which is what made the IK fallback reconfigure the arm wildly between
+        # two nearby poses. A larger budget lets it converge near the seed state.
+        kinematics_solver_timeout: 0.05
+        kinematics_solver_attempts: 5

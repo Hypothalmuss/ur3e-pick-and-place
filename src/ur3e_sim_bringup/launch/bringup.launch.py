@@ -29,7 +29,7 @@ def generate_launch_description():
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         DeclareLaunchArgument('gazebo_gui', default_value='true'),
         DeclareLaunchArgument('use_mimic_plugin', default_value='true'),
-        DeclareLaunchArgument('use_grasp_fix', default_value='true'),
+        DeclareLaunchArgument('use_grasp_fix', default_value='false'),
 
         Node(
             package='robot_state_publisher',

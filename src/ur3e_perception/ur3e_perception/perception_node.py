@@ -36,6 +36,15 @@ class PerceptionNode(Node):
         self._fx = 525.0
         self._fy = 525.0
         self._table_z = 0.0
+        # The camera looks down on the object's TOP face, so intersecting that
+        # sightline with the table plane lands the estimate short of the object
+        # by the parallax over its own height - about 11 mm for the cube here,
+        # which is enough for a finger pad to catch it off-centre and shove it
+        # away during the close. Intersect at the top face instead, which gives
+        # the correct x/y of the object's centre. The reported z stays on the
+        # table so the orchestrator's grasp offsets are unchanged.
+        self._object_height = self.declare_parameter(
+            'object_height', 0.06).get_parameter_value().double_value
 
         # camera_optical_frame (X=right, Y=down, Z=forward) -> camera_link (X=forward, Y=left, Z=up)
         #   X_body =  Z_opt,  Y_body = -X_opt,  Z_body = -Y_opt
@@ -140,7 +149,7 @@ class PerceptionNode(Node):
 
             if abs(ray_base[2]) < 1e-6:
                 continue
-            t = (self._table_z - cam_pos[2]) / ray_base[2]
+            t = (self._table_z + self._object_height - cam_pos[2]) / ray_base[2]
             world = cam_pos + t * ray_base
 
             obj = DetectedObject()
@@ -148,7 +157,7 @@ class PerceptionNode(Node):
             obj.class_name = 'cube'
             obj.confidence = 1.0
             obj.pose = Pose(
-                position=Point(x=world[0], y=world[1], z=world[2]),
+                position=Point(x=world[0], y=world[1], z=self._table_z),
                 orientation=Quaternion(x=0.0, y=0.0, z=0.0, w=1.0),
             )
             detected.objects.append(obj)

@@ -1,31 +1,55 @@
+# Position limits keep the planner inside one sane working branch. The UR3e URDF
+# allows +/-2*pi on every joint, which let the planner pick wrapped-around and
+# elbow-flipped configurations - the arm would fold onto itself or take a long way
+# round between two nearby poses. Everything below is a superset of the poses the
+# pick-and-place cycle actually needs (HOME is 0, -1.5707, 0, -1.5707, 0, 0).
 joint_limits:
   shoulder_pan_joint:
+    has_position_limits: true
+    min_position: -3.14159
+    max_position: 3.14159
     has_velocity_limits: true
-    max_velocity: 0.5
+    max_velocity: 0.35
     has_acceleration_limits: true
-    max_acceleration: 2.0
+    max_acceleration: 1.0
+  # Upper arm stays at or above horizontal - it never swings down and behind.
   shoulder_lift_joint:
+    has_position_limits: true
+    min_position: -3.14159
+    max_position: 0.0
     has_velocity_limits: true
-    max_velocity: 0.5
+    max_velocity: 0.35
     has_acceleration_limits: true
-    max_acceleration: 2.0
+    max_acceleration: 1.0
   elbow_joint:
+    has_position_limits: true
+    min_position: -3.14159
+    max_position: 3.14159
+    has_velocity_limits: true
+    max_velocity: 0.35
+    has_acceleration_limits: true
+    max_acceleration: 1.0
+  wrist_1_joint:
+    has_position_limits: true
+    min_position: -3.14159
+    max_position: 3.14159
     has_velocity_limits: true
     max_velocity: 0.5
     has_acceleration_limits: true
-    max_acceleration: 2.0
-  wrist_1_joint:
-    has_velocity_limits: true
-    max_velocity: 0.8
-    has_acceleration_limits: true
-    max_acceleration: 3.0
+    max_acceleration: 1.5
   wrist_2_joint:
+    has_position_limits: true
+    min_position: -3.14159
+    max_position: 3.14159
     has_velocity_limits: true
-    max_velocity: 0.8
+    max_velocity: 0.5
     has_acceleration_limits: true
-    max_acceleration: 3.0
+    max_acceleration: 1.5
   wrist_3_joint:
+    has_position_limits: true
+    min_position: -3.14159
+    max_position: 3.14159
     has_velocity_limits: true
-    max_velocity: 0.8
+    max_velocity: 0.5
     has_acceleration_limits: true
-    max_acceleration: 3.0
+    max_acceleration: 1.5

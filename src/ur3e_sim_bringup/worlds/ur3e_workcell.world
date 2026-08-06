@@ -5,11 +5,38 @@
       <uri>model://sun</uri>
     </include>
 
+    <!-- A 4 ms step is far too coarse to hold an object by friction - the solver
+         only samples the finger/object contact 250 times a second and the grip
+         slips or explodes. 1 ms with more solver iterations makes a real grasp
+         stable. Costs real-time factor, which does not matter here. -->
     <physics type="ode">
-      <real_time_update_rate>250</real_time_update_rate>
-      <max_step_size>0.004</max_step_size>
+      <real_time_update_rate>1000</real_time_update_rate>
+      <max_step_size>0.001</max_step_size>
       <real_time_factor>1.0</real_time_factor>
+      <ode>
+        <solver>
+          <type>quick</type>
+          <iters>150</iters>
+          <sor>1.3</sor>
+        </solver>
+        <constraints>
+          <cfm>0.0</cfm>
+          <erp>0.2</erp>
+          <contact_max_correcting_vel>10.0</contact_max_correcting_vel>
+          <contact_surface_layer>0.0002</contact_surface_layer>
+        </constraints>
+      </ode>
     </physics>
+
+    <!-- Publishes /gazebo/model_states so the cube's true pose can be observed
+         without polling 'gz model', which opens a transport connection per call
+         and crashes gzserver when called repeatedly. -->
+    <plugin name="gazebo_ros_state" filename="libgazebo_ros_state.so">
+      <ros>
+        <namespace>/gazebo</namespace>
+      </ros>
+      <update_rate>20.0</update_rate>
+    </plugin>
 
     <model name="ground_plane">
       <static>true</static>
@@ -49,10 +76,10 @@
       <pose>0.4 0 0.03 0 0 0</pose>
       <link name="link">
         <inertial>
-          <mass>0.15</mass>
+          <mass>0.08</mass>
           <inertia>
-            <ixx>9.0e-5</ixx><ixy>0</ixy><ixz>0</ixz>
-            <iyy>9.0e-5</iyy><iyz>0</iyz><izz>9.0e-5</izz>
+            <ixx>4.8e-5</ixx><ixy>0</ixy><ixz>0</ixz>
+            <iyy>4.8e-5</iyy><iyz>0</iyz><izz>4.8e-5</izz>
           </inertia>
         </inertial>
         <visual name="visual">
@@ -73,20 +100,20 @@
               <size>0.06 0.06 0.06</size>
             </box>
           </geometry>
+          <!-- Default collide_bitmask, so the cube collides with everything
+               including the gripper pads. It used to be 0x01 (ground only) so
+               the fingers could not touch it at all and a plugin moved it by
+               hand. High friction so the pads can actually hold it. -->
           <surface>
             <friction>
               <ode>
-                <mu>1.0</mu>
-                <mu2>1.0</mu2>
+                <mu>3.0</mu>
+                <mu2>3.0</mu2>
               </ode>
             </friction>
-            <!-- Bit 0 only: collides with the ground (default 0xffff) so it
-                 rests, but not with the gripper fingers (set to 0xfffe), so the
-                 gripper never knocks it. The grasp plugin handles the hold. -->
-            <collide_bitmask>0x01</collide_bitmask>
             <contact>
               <ode>
-                <kp>1e5</kp>
+                <kp>1e6</kp>
                 <kd>1.0</kd>
                 <max_vel>0.01</max_vel>
                 <min_depth>0.0</min_depth>

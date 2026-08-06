@@ -7,7 +7,11 @@
   <xacro:arg name="initial_positions_file" default="$(find ur_description)/config/initial_positions.yaml"/>
   <xacro:arg name="use_grasp_plugins" default="true"/>
   <xacro:arg name="use_mimic_plugin" default="true"/>
-  <xacro:arg name="use_grasp_fix" default="true"/>
+  <!-- The grasp plugin held the target kinematically and teleported it each
+       tick, so it ignored gravity, could not be moved in the Gazebo GUI, and
+       snapped to the floor on release. The gripper grips by friction now, so
+       it is off by default. Set use_grasp_fix:=true to get the old behaviour. -->
+  <xacro:arg name="use_grasp_fix" default="false"/>
 
   <xacro:include filename="$(find ur_description)/urdf/ur_macro.xacro"/>
   <xacro:include filename="$(find robotiq_description)/urdf/ur_to_robotiq_adapter.urdf.xacro"/>
@@ -106,8 +110,12 @@
     </ros2_control>
 
     <xacro:if value="$(arg use_mimic_plugin)">
-    <!-- Couple the passive Robotiq finger joints to the driver knuckle with
-         PID force control so both fingers physically close on the object. -->
+    <!-- Couple the passive Robotiq finger joints to the driver knuckle.
+         The two contact pads hang off the inner-knuckle and finger-tip joints,
+         so those four run PID force control (usePID) and can stall against a
+         grasped object. gazebo_ros2_control drives the knuckle itself by
+         kinematic SetPosition, which cannot stall - a pad on that joint would
+         simply squeeze the object out instead of holding it. -->
     <gazebo>
       <plugin filename="libur3e_mimic_joint_plugin.so" name="mimic_right_knuckle">
         <joint>robotiq_85_left_knuckle_joint</joint>
@@ -120,29 +128,33 @@
         <joint>robotiq_85_left_knuckle_joint</joint>
         <mimicJoint>robotiq_85_left_inner_knuckle_joint</mimicJoint>
         <multiplier>1.0</multiplier>
-        <maxEffort>20.0</maxEffort>
-        <kp>15.0</kp><kd>0.5</kd>
+        <maxEffort>2.0</maxEffort>
+        <kp>6.0</kp><kd>0.05</kd>
+        <usePID>true</usePID>
       </plugin>
       <plugin filename="libur3e_mimic_joint_plugin.so" name="mimic_right_inner_knuckle">
         <joint>robotiq_85_left_knuckle_joint</joint>
         <mimicJoint>robotiq_85_right_inner_knuckle_joint</mimicJoint>
         <multiplier>-1.0</multiplier>
-        <maxEffort>20.0</maxEffort>
-        <kp>15.0</kp><kd>0.5</kd>
+        <maxEffort>2.0</maxEffort>
+        <kp>6.0</kp><kd>0.05</kd>
+        <usePID>true</usePID>
       </plugin>
       <plugin filename="libur3e_mimic_joint_plugin.so" name="mimic_left_finger_tip">
         <joint>robotiq_85_left_knuckle_joint</joint>
         <mimicJoint>robotiq_85_left_finger_tip_joint</mimicJoint>
         <multiplier>-1.0</multiplier>
-        <maxEffort>20.0</maxEffort>
-        <kp>15.0</kp><kd>0.5</kd>
+        <maxEffort>2.0</maxEffort>
+        <kp>6.0</kp><kd>0.05</kd>
+        <usePID>true</usePID>
       </plugin>
       <plugin filename="libur3e_mimic_joint_plugin.so" name="mimic_right_finger_tip">
         <joint>robotiq_85_left_knuckle_joint</joint>
         <mimicJoint>robotiq_85_right_finger_tip_joint</mimicJoint>
         <multiplier>1.0</multiplier>
-        <maxEffort>20.0</maxEffort>
-        <kp>15.0</kp><kd>0.5</kd>
+        <maxEffort>2.0</maxEffort>
+        <kp>6.0</kp><kd>0.05</kd>
+        <usePID>true</usePID>
       </plugin>
     </gazebo>
     </xacro:if>
@@ -158,8 +170,12 @@
         <palm_link>wrist_3_link</palm_link>
         <left_finger_link>robotiq_85_left_finger_tip_link</left_finger_link>
         <right_finger_link>robotiq_85_right_finger_tip_link</right_finger_link>
-        <attach_threshold>0.35</attach_threshold>
-        <detach_threshold>0.15</detach_threshold>
+        <!-- Thresholds must sit below the closing angle the orchestrator actually
+             commands. That angle is derived from the object width (a 0.06 m cube
+             closes the knuckle to ~0.27 rad, not the 0.70 rad it used to command),
+             so a 0.35 rad attach threshold would never latch. -->
+        <attach_threshold>0.20</attach_threshold>
+        <detach_threshold>0.08</detach_threshold>
         <grasp_radius>0.14</grasp_radius>
         <palm_offset_z>0.16</palm_offset_z>
         <update_rate>25</update_rate>
@@ -187,8 +203,9 @@
        plugin. Because the 4-bar linkage is a tree (not a closed loop) in URDF,
        the independently-driven links overlap slightly and Gazebo's contact
        solver ejects them (pieces fly off). collide_bitmask 0x00 makes them
-       collide with nothing, which stops that; the grasp is plugin-managed so the
-       fingers need no physics contact. They still render and move visually. -->
+       collide with nothing, which stops that. They still render and move
+       visually. This applies to the intermediate linkage only - the two pads
+       that actually touch the object need real contact, see below. -->
   <xacro:macro name="finger_no_collision" params="link">
     <gazebo reference="${link}">
       <collision>
@@ -200,8 +217,25 @@
       </collision>
     </gazebo>
   </xacro:macro>
-  <xacro:finger_no_collision link="robotiq_85_left_finger_tip_link"/>
-  <xacro:finger_no_collision link="robotiq_85_right_finger_tip_link"/>
+
+  <!-- The two finger pads are the only links that should touch the object. They
+       carry the grip, so they get real contact and high friction. The knuckle is
+       position controlled to the object's own width, which makes the pads behave
+       as a rigid clamp - the object is squeezed between them and held by
+       friction, rather than being carried by a plugin. -->
+  <xacro:macro name="finger_pad_contact" params="link">
+    <gazebo reference="${link}">
+      <mu1>3.0</mu1>
+      <mu2>3.0</mu2>
+      <kp>1e6</kp>
+      <kd>1.0</kd>
+      <minDepth>0.0</minDepth>
+      <maxVel>0.01</maxVel>
+    </gazebo>
+  </xacro:macro>
+  <xacro:finger_pad_contact link="robotiq_85_left_finger_tip_link"/>
+  <xacro:finger_pad_contact link="robotiq_85_right_finger_tip_link"/>
+
   <xacro:finger_no_collision link="robotiq_85_left_inner_knuckle_link"/>
   <xacro:finger_no_collision link="robotiq_85_right_inner_knuckle_link"/>
   <xacro:finger_no_collision link="robotiq_85_left_knuckle_link"/>
