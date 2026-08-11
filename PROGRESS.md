@@ -302,3 +302,50 @@ plane. All four Cartesian segments now solve 100% with no fallbacks.
   is called on an already-removed object. Harmless but the recovery path is untidy.
 - Grasp is kinematic (plugin-held): during carry the cube ignores gravity and cannot
   be dragged in the GUI.
+
+## 2026-08-11 (later): dashboard control, and three real bugs it exposed
+
+`ur3e_dashboard` is now a working web UI (`http://127.0.0.1:8080`, launched by
+`run_sim.sh`) driving the cell over `ur3e_msgs/srv/RunTask`. Tasks: `home`,
+`retract`, `pick_place`, `pick_to` (x,y from the UI), `open_gripper`,
+`close_gripper`, `stop`. The orchestrator no longer loops on its own - it idles
+until commanded; `auto:=true` restores the old behaviour.
+
+Plain stdlib `http.server` + a ROS node, no FastAPI/rosbridge, so it runs on a
+bare Humble install. `GET /api/state` (status + camera/orchestrator liveness),
+`POST /api/task`. UI polls at 400 ms.
+
+Acceptance: 10/10 twice in a row (20/20), across 6 pick cycles - 0 ERROR states,
+0 NO_IK_SOLUTION, 0 stale callbacks. Place accuracy 7-10 mm.
+
+### Stop did not stop
+An aborted cycle's callback chain kept running: after a stop the robot executed
+a whole phantom pick-and-place in the background, interleaved with the next
+command (observed: ERROR -> recovering -> GRASP -> HOME -> GRASP_CLOSE ->
+RETRACT -> PLACE -> ...). Fixed with a generation counter - `_guard` binds every
+motion callback to the generation current when the motion was requested, and
+`_abandon()` bumps it on task start, stop, and entry to recovery. Stale
+callbacks are now dropped with a log line instead of driving the arm.
+
+### PLACE_DOWN raced its own planning scene
+`_apply_scene` was fire-and-forget, so the descent could plan while the cube was
+still attached to tool0 - where at place height its underside rests on the
+ground plane, so collision-checked IK rejected everything (-31) and the cycle
+bailed into recovery, which then *dropped* the cube from 0.32 m rather than
+placing it. `_apply_scene`/`_scene_remove_cube` take an optional `then`, and
+both descents are now sequenced behind the diff landing.
+
+### A partial straight line is worth executing
+Even sequenced, the place descent intermittently solved only ~32-39%: the free
+plan into PLACE lands in whichever IK branch it likes, and from some of them the
+rest of the vertical line is unreachable. Falling back to a pose goal then failed
+collision-checked IK and aborted the cycle. Now a partial path above
+`CARTESIAN_RETRY_MIN_FRACTION` is executed and the remainder re-requested from
+the new configuration (up to `CARTESIAN_MAX_ATTEMPTS`). It fired twice in the
+acceptance runs and both recovered to a clean 100% descent.
+
+### Also
+- `RETRACT_JOINTS` was byte-identical to `HOME_JOINTS`, so the dashboard's Home
+  and Retract buttons did exactly the same thing. Retract is now a real park
+  pose (pan +90 deg, arm folded) clear of the workspace and the camera.
+- A deliberate stop reported `last_result: failed`; it now reports `stopped`.

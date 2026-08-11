@@ -21,6 +21,7 @@ set(msg_files
 set(srv_files
   srv/AssignPickGoal.srv
   srv/GetBTStatus.srv
+  srv/RunTask.srv
 )
 
 rosidl_generate_interfaces(${PROJECT_NAME}

@@ -1,3 +1,6 @@
+import os
+from glob import glob
+
 from setuptools import find_packages, setup
 
 package_name = 'ur3e_dashboard'
@@ -11,12 +14,14 @@ setup(
          ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/static', ['static/index.html']),
+        (os.path.join('share', package_name, 'launch'),
+         glob('launch/*.launch.py')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='user',
     maintainer_email='user@example.com',
-    description='Web dashboard (FastAPI + rosbridge)',
+    description='Web dashboard for driving the UR3e pick-and-place cell',
     license='MIT',
     entry_points={
         'console_scripts': [

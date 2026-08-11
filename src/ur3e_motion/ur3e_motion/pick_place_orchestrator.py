@@ -1,4 +1,6 @@
+import json
 import math
+from collections import deque
 from enum import Enum, auto
 
 import rclpy
@@ -26,7 +28,9 @@ from trajectory_msgs.msg import JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
 
 from sensor_msgs.msg import JointState
+from std_msgs.msg import String
 from ur3e_msgs.msg import DetectedObjectArray
+from ur3e_msgs.srv import RunTask
 
 
 # --- Robotiq 2F-85 stroke, measured ------------------------------------------
@@ -111,7 +115,12 @@ ARM_JOINTS = [
     'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint',
 ]
 HOME_JOINTS = [0.0, -1.5707, 0.0, -1.5707, 0.0, 0.0]
-RETRACT_JOINTS = [0.0, -1.5707, 0.0, -1.5707, 0.0, 0.0]
+# Park pose: pan swung 90 degrees off the pick area and the arm folded up, so
+# the tool sits clear of both the workspace and the overhead camera's view of
+# it. Distinct from HOME on purpose - it used to be the same six values, which
+# made the dashboard's Home and Retract buttons do exactly the same thing.
+# shoulder_lift stays negative (joint_limits.yaml caps it at 0).
+RETRACT_JOINTS = [1.5707, -1.9, 1.4, -1.1, -1.5707, 0.0]
 
 TOOL0_DOWN_ORI = Quaternion(x=1.0, y=0.0, z=0.0, w=0.0)
 
@@ -141,6 +150,12 @@ GRIPPER_TOUCH_LINKS = [
 CARTESIAN_STEP = 0.005        # interpolation resolution (m)
 CARTESIAN_JUMP = 5.0          # reject IK-branch flips between waypoints
 CARTESIAN_MIN_FRACTION = 0.9  # accept the path only if ~fully solved
+# A partial straight line is still worth executing: it makes real progress and
+# lands the arm in a fresh configuration from which the rest often solves. Below
+# CARTESIAN_RETRY_MIN_FRACTION there is too little progress for the retry to
+# converge, so it goes to the planned fallback instead.
+CARTESIAN_RETRY_MIN_FRACTION = 0.15
+CARTESIAN_MAX_ATTEMPTS = 4
 
 # Largest joint displacement an IK solution may ask for before it is treated as
 # a reconfiguration rather than a move. Anything bigger is the arm flipping to a
@@ -154,6 +169,19 @@ MAX_IK_JOINT_JUMP = 2.0  # rad
 # velocity limits in config/moveit/joint_limits.yaml.
 CARRY_VEL_SCALE = 0.15
 CARRY_ACC_SCALE = 0.10
+
+
+# Tasks the dashboard may request. pick_place uses the default place target;
+# pick_to takes one from the request.
+TASKS = {
+    'home',
+    'retract',
+    'pick_place',
+    'pick_to',
+    'open_gripper',
+    'close_gripper',
+    'stop',
+}
 
 
 class State(Enum):
@@ -210,9 +238,180 @@ class PickPlaceOrchestrator(Node):
         self._cycle_active = False
         self._recovering = False
 
+        # --- dashboard task interface ---------------------------------------
+        # `auto` reproduces the original behaviour of looping pick-and-place on
+        # its own. Off by default: the dashboard drives the robot, and a robot
+        # that starts moving the moment it is launched is a nuisance to test.
+        self.declare_parameter('auto', False)
+        self._auto = self.get_parameter('auto').value
+
+        self._pending_task: str | None = None
+        self._active_task: str | None = None
+        self._task_x = PLACE_X
+        self._task_y = PLACE_Y
+        self._place_x = PLACE_X
+        self._place_y = PLACE_Y
+        self._stop_requested = False
+        self._last_result = ''
+        self._log = deque(maxlen=40)
+        # Bumped whenever a task is started or abandoned. Motion callbacks
+        # capture it when the motion is requested and refuse to fire if it has
+        # moved on, so an aborted cycle cannot keep driving the arm. Without
+        # this a stop only relabelled the state: the in-flight callback chain
+        # ran to completion in the background and executed a whole phantom
+        # pick-and-place, interleaved with whatever was commanded next.
+        self._generation = 0
+
+        self._status_pub = self.create_publisher(String, '/ur3e/task_status', 10)
+        self._task_srv = self.create_service(
+            RunTask, '/ur3e/run_task', self._run_task_cb, callback_group=cbg)
+        self._status_timer = self.create_timer(
+            0.25, self._publish_status, callback_group=cbg)
+
     def _set_state(self, state: State) -> None:
         self._state = state
         self.get_logger().info(f'State -> {state.name}')
+        self._note(f'State -> {state.name}')
+
+    # ------------------------------------------------------------------
+    # Dashboard task interface
+    # ------------------------------------------------------------------
+
+    def _note(self, text: str) -> None:
+        """Append to the ring buffer the dashboard shows as a live feed."""
+        self._log.append({
+            't': self.get_clock().now().nanoseconds / 1e9,
+            'text': text,
+        })
+
+    def _busy(self) -> bool:
+        return self._cycle_active or self._recovering
+
+    def _guard(self, callback):
+        """Bind `callback` to the current task generation.
+
+        Every motion helper routes its completion through this, so abandoning a
+        task (stop, or a failure that drops into recovery) is enough to make the
+        rest of its callback chain evaporate instead of continuing to command
+        motion behind the next task's back.
+        """
+        gen = self._generation
+
+        def wrapped(*args, **kwargs):
+            if gen != self._generation:
+                self.get_logger().info(
+                    'dropping stale callback from an abandoned task')
+                return None
+            return callback(*args, **kwargs)
+
+        return wrapped
+
+    def _abandon(self) -> None:
+        self._generation += 1
+
+    def _run_task_cb(self, request, response):
+        task = (request.task or '').strip().lower()
+
+        if task not in TASKS:
+            response.accepted = False
+            response.message = f"unknown task '{task}'"
+            return response
+
+        # Stop is the one command that is always accepted - refusing to stop
+        # because the robot is busy would be exactly backwards.
+        if task == 'stop':
+            self._stop_requested = True
+            self._pending_task = None
+            response.accepted = True
+            response.message = 'stopping'
+            self._note('STOP requested')
+            return response
+
+        if self._busy() or self._pending_task is not None:
+            response.accepted = False
+            response.message = f'busy ({self._state.name})'
+            return response
+
+        if task == 'pick_to':
+            radius = math.hypot(request.x, request.y)
+            if radius > REACH_MAX:
+                response.accepted = False
+                response.message = (
+                    f'target radius {radius:.3f} m exceeds reach {REACH_MAX} m')
+                return response
+            self._task_x = request.x
+            self._task_y = request.y
+
+        self._pending_task = task
+        response.accepted = True
+        response.message = f'{task} accepted'
+        self._note(f'task accepted: {task}')
+        return response
+
+    def _publish_status(self) -> None:
+        cube = self._cube_pose
+        cube_out = None
+        if cube is not None:
+            cube_out = {
+                'x': round(cube.position.x, 4),
+                'y': round(cube.position.y, 4),
+                'z': round(cube.position.z, 4),
+                'reachable': math.hypot(
+                    cube.position.x, cube.position.y) <= REACH_MAX,
+            }
+
+        joints = {
+            n: round(self._current_joint_positions.get(n, 0.0), 4)
+            for n in ARM_JOINTS if n in self._current_joint_positions
+        }
+
+        self._status_pub.publish(String(data=json.dumps({
+            'state': self._state.name,
+            'busy': self._busy(),
+            'auto': self._auto,
+            'active_task': self._active_task,
+            'pending_task': self._pending_task,
+            'last_result': self._last_result,
+            'cube': cube_out,
+            'joints': joints,
+            'gripper': round(
+                self._current_joint_positions.get(GRIPPER_JOINT, 0.0), 4),
+            'place_target': {'x': self._place_x, 'y': self._place_y},
+            'tasks': sorted(TASKS),
+            'log': list(self._log),
+        })))
+
+    def _start_task(self, task: str) -> None:
+        """Dispatch one accepted task. Called from _tick when idle."""
+        self._active_task = task
+        self._cycle_active = True
+        # New task owns the arm from here; anything still in flight is stale.
+        self._abandon()
+
+        if task == 'home':
+            self._set_state(State.HOME)
+            self._move_joints(HOME_JOINTS, self._simple_done)
+        elif task == 'retract':
+            self._set_state(State.HOME)
+            self._move_joints(RETRACT_JOINTS, self._simple_done)
+        elif task == 'open_gripper':
+            self._gripper(GRIPPER_OPEN, self._simple_done)
+        elif task == 'close_gripper':
+            self._gripper(GRIPPER_CLOSED, self._simple_done)
+        else:  # pick_place / pick_to
+            if task == 'pick_to':
+                self._place_x, self._place_y = self._task_x, self._task_y
+            else:
+                self._place_x, self._place_y = PLACE_X, PLACE_Y
+            self._note(f'placing at ({self._place_x:.3f}, {self._place_y:.3f})')
+            self._approach(True)
+
+    def _simple_done(self, success: bool) -> None:
+        self._cycle_active = False
+        self._last_result = 'ok' if success else 'failed'
+        self._note(f'{self._active_task}: {self._last_result}')
+        self._active_task = None
+        self._set_state(State.WAITING)
 
     def _joint_state_cb(self, msg: JointState) -> None:
         self._current_joint_positions = dict(zip(msg.name, msg.position))
@@ -240,9 +439,26 @@ class PickPlaceOrchestrator(Node):
             self._move_joints(HOME_JOINTS, self._startup_done)
             return
 
+        # A stop drops into the normal ERROR recovery (reopen the gripper, drop
+        # the cube from the scene, go HOME) rather than freezing where it is,
+        # which would leave a half-open gripper and a phantom attached object.
+        if self._stop_requested:
+            self._stop_requested = False
+            if self._busy() or self._state != State.WAITING:
+                self._note('stopping: recovering to HOME')
+                self._abandon()
+                self._last_result = 'stopped'
+                self._set_state(State.ERROR)
+            else:
+                self._last_result = 'stopped (was idle)'
+            return
+
         if self._state == State.ERROR:
             if not self._recovering:
                 self._recovering = True
+                # Whatever was in flight is now orphaned - make sure it cannot
+                # come back and drive the arm while recovery is running.
+                self._abandon()
                 self.get_logger().warn(
                     'Cycle failed; recovering (open gripper, return HOME)')
                 self._gripper(GRIPPER_OPEN, self._recover_home)
@@ -254,23 +470,34 @@ class PickPlaceOrchestrator(Node):
         if self._cycle_active:
             return
 
-        cube = self._cube_pose
-        if cube is None:
-            return
+        task = self._pending_task
+        if task is None:
+            # Only the original standalone mode starts a cycle unprompted.
+            if not self._auto:
+                return
+            task = 'pick_place'
+        self._pending_task = None
 
-        radius = math.hypot(cube.position.x, cube.position.y)
-        if radius > REACH_MAX:
-            now = self.get_clock().now().nanoseconds / 1e9
-            if now - self._last_perception_log_time >= 5.0:
-                self.get_logger().warn(
-                    f'Cube at radius {radius:.3f}m exceeds reach limit '
-                    f'{REACH_MAX}m, ignoring detection')
-                self._last_perception_log_time = now
-            return
+        if task in ('pick_place', 'pick_to'):
+            cube = self._cube_pose
+            if cube is None:
+                self._last_result = 'no cube detected'
+                self._note('pick refused: no cube detected')
+                return
 
-        self.get_logger().info('Cube detected, proceeding to approach')
-        self._cycle_active = True
-        self._approach(True)
+            radius = math.hypot(cube.position.x, cube.position.y)
+            if radius > REACH_MAX:
+                msg = (f'cube at radius {radius:.3f}m exceeds reach limit '
+                       f'{REACH_MAX}m')
+                self.get_logger().warn(msg)
+                self._last_result = msg
+                self._note(f'pick refused: {msg}')
+                return
+
+            self.get_logger().info('Cube detected, proceeding to approach')
+
+        self._last_result = ''
+        self._start_task(task)
 
     def _startup_done(self, success: bool) -> None:
         if not success:
@@ -330,9 +557,11 @@ class PickPlaceOrchestrator(Node):
         # already runs with avoid_collisions=False for the same reason; this
         # extends that to the plan/IK fallbacks. It comes back attached to the
         # tool once the gripper has closed.
-        self._scene_remove_cube()
-        # Straight down onto the cube - a planned motion arcs in sideways.
-        self._move_cartesian(grasp, self._grasp_close)
+        # Sequenced, not fire-and-forget: if the descent plans before the diff
+        # lands it still sees the cube and fails.
+        self._scene_remove_cube(
+            # Straight down onto the cube - a planned motion arcs in sideways.
+            then=lambda: self._move_cartesian(grasp, self._grasp_close))
 
     def _grasp_close(self, success: bool) -> None:
         if not success:
@@ -364,7 +593,8 @@ class PickPlaceOrchestrator(Node):
             return
 
         place = Pose(
-            position=Point(x=PLACE_X, y=PLACE_Y, z=PLACE_Z + LIFT_HEIGHT),
+            position=Point(x=self._place_x, y=self._place_y,
+                           z=PLACE_Z + LIFT_HEIGHT),
             orientation=TOOL0_DOWN_ORI,
         )
         self._set_state(State.PLACE)
@@ -376,7 +606,8 @@ class PickPlaceOrchestrator(Node):
             return
 
         place = Pose(
-            position=Point(x=PLACE_X, y=PLACE_Y, z=PLACE_Z + GRASP_Z_OFFSET),
+            position=Point(x=self._place_x, y=self._place_y,
+                           z=PLACE_Z + GRASP_Z_OFFSET),
             orientation=TOOL0_DOWN_ORI,
         )
         self._set_state(State.PLACE_DOWN)
@@ -386,9 +617,16 @@ class PickPlaceOrchestrator(Node):
         # checked fallback rejects that as a contact (compute_ik returns
         # NO_IK_SOLUTION). The gripper still physically holds it - only the
         # collision model is stood down for the descent.
-        self._scene_remove_cube()
-        # Straight down again, so the cube is set down instead of swept down.
-        self._move_cartesian(place, self._release)
+        #
+        # This must be sequenced rather than fire-and-forget. Racing the detach
+        # against the descent is what made PLACE_DOWN fail intermittently: the
+        # IK ran while the cube was still attached to tool0, where at this
+        # height its underside rests on the ground plane, so every solution was
+        # rejected as a collision and the cycle bailed into recovery - which
+        # then dropped the cube from 0.32 m instead of placing it.
+        self._scene_remove_cube(
+            # Straight down again, so the cube is set down not swept down.
+            then=lambda: self._move_cartesian(place, self._release))
 
     def _release(self, success: bool) -> None:
         if not success:
@@ -406,7 +644,8 @@ class PickPlaceOrchestrator(Node):
         # Straight up and clear of the cube before anything lateral happens, so
         # the gripper does not drag sideways across what it just set down.
         lift = Pose(
-            position=Point(x=PLACE_X, y=PLACE_Y, z=PLACE_Z + LIFT_HEIGHT),
+            position=Point(x=self._place_x, y=self._place_y,
+                           z=PLACE_Z + LIFT_HEIGHT),
             orientation=TOOL0_DOWN_ORI,
         )
         self._move_cartesian(lift, self._finish)
@@ -414,13 +653,16 @@ class PickPlaceOrchestrator(Node):
     def _finish(self, success: bool) -> None:
         # Tool is clear now, so the cube can be an obstacle again. The next cycle
         # re-adds it at whatever position perception actually reports.
-        self._scene_add_cube(PLACE_X, PLACE_Y)
+        self._scene_add_cube(self._place_x, self._place_y)
         self._set_state(State.DONE)
         self.get_logger().info('Pick-and-place complete')
         self._move_joints(RETRACT_JOINTS, self._reset, duration_sec=None)
 
     def _reset(self, success: bool = True) -> None:
         self._cycle_active = False
+        self._last_result = 'ok'
+        self._note(f'{self._active_task or "pick_place"}: ok')
+        self._active_task = None
         self._set_state(State.WAITING)
         self._cube_pose = None
         self.get_logger().info('Ready for next pick-and-place')
@@ -437,22 +679,43 @@ class PickPlaceOrchestrator(Node):
         self._recovering = False
         self._cycle_active = False
         self._cube_pose = None
+        # A deliberate stop already set its own result; only an actual failure
+        # should be reported as one.
+        if not self._last_result:
+            self._last_result = 'failed'
+        self._note(f'{self._active_task or "task"}: {self._last_result}')
+        self._active_task = None
         self._set_state(State.WAITING)
         self.get_logger().info('Recovered; waiting for cube')
 
     # ------------------------------------------------------------------
     # Planning scene: keep MoveIt aware of the cube
     # ------------------------------------------------------------------
-    def _apply_scene(self, scene: PlanningScene, what: str) -> None:
-        """Push a planning-scene diff. Fire-and-forget; motion never blocks on it."""
+    def _apply_scene(self, scene: PlanningScene, what: str, then=None) -> None:
+        """Push a planning-scene diff.
+
+        Fire-and-forget by default - most scene updates are advisory and motion
+        should not stall on them. Pass `then` for the cases where the next
+        motion is only valid once the diff has actually been applied: dropping
+        the cube before a descent is one, because planning against a scene that
+        still has it attached fails with NO_IK_SOLUTION.
+        """
         if not self._scene_client.service_is_ready():
             self.get_logger().warn(
                 f'apply_planning_scene unavailable, skipping {what}')
+            if then is not None:
+                then()
             return
         req = ApplyPlanningScene.Request()
         req.scene = scene
+
+        def done(f):
+            self._scene_result_cb(f, what)
+            if then is not None:
+                then()
+
         future = self._scene_client.call_async(req)
-        future.add_done_callback(lambda f: self._scene_result_cb(f, what))
+        future.add_done_callback(done)
 
     def _scene_result_cb(self, future, what: str) -> None:
         try:
@@ -504,7 +767,7 @@ class PickPlaceOrchestrator(Node):
         scene.robot_state.attached_collision_objects.append(aco)
         self._apply_scene(scene, 'attach cube')
 
-    def _scene_remove_cube(self) -> None:
+    def _scene_remove_cube(self, then=None) -> None:
         """Drop the cube from the scene entirely - off the tool and out of the world.
 
         Called the moment the gripper opens. Putting the cube straight back into
@@ -525,12 +788,13 @@ class PickPlaceOrchestrator(Node):
         scene.robot_state.is_diff = True
         scene.robot_state.attached_collision_objects.append(aco)
         scene.world.collision_objects.append(world_obj)
-        self._apply_scene(scene, 'remove cube')
+        self._apply_scene(scene, 'remove cube', then=then)
 
     # ------------------------------------------------------------------
     # Straight-line Cartesian motion
     # ------------------------------------------------------------------
-    def _move_cartesian(self, target_pose: Pose, callback) -> None:
+    def _move_cartesian(self, target_pose: Pose, callback,
+                        attempt: int = 1) -> None:
         """Move tool0 to `target_pose` along a straight line.
 
         Used for the descent onto the cube and the lift off it. Collision
@@ -539,6 +803,8 @@ class PickPlaceOrchestrator(Node):
         straight vertical move cannot reach anything else. Every free-space
         motion still plans with full collision checking.
         """
+        # Abandoned tasks must not keep driving the arm; see _guard.
+        callback = self._guard(callback)
         if not self._cartesian_client.wait_for_service(timeout_sec=2.0):
             self.get_logger().warn(
                 'compute_cartesian_path unavailable, planning freely instead')
@@ -558,9 +824,11 @@ class PickPlaceOrchestrator(Node):
 
         future = self._cartesian_client.call_async(req)
         future.add_done_callback(
-            lambda f: self._cartesian_response_cb(f, callback, target_pose))
+            lambda f: self._cartesian_response_cb(
+                f, callback, target_pose, attempt))
 
-    def _cartesian_response_cb(self, future, callback, target_pose: Pose) -> None:
+    def _cartesian_response_cb(self, future, callback, target_pose: Pose,
+                               attempt: int = 1) -> None:
         try:
             response = future.result()
         except Exception as e:
@@ -569,6 +837,27 @@ class PickPlaceOrchestrator(Node):
             return
 
         if response.fraction < CARTESIAN_MIN_FRACTION:
+            # A partial solution usually means the arm arrived in an IK branch
+            # from which the rest of the straight line is not reachable - the
+            # descent to the place pose hits this intermittently, because the
+            # free plan into PLACE can land in different branches. Rather than
+            # give up to a pose goal (which then fails collision-checked IK and
+            # aborts the whole cycle), walk down as far as the line does solve
+            # and re-request from there: the new configuration usually solves
+            # the remainder.
+            if (CARTESIAN_RETRY_MIN_FRACTION <= response.fraction
+                    and attempt < CARTESIAN_MAX_ATTEMPTS):
+                self.get_logger().warn(
+                    f'straight-line path only {response.fraction:.0%} solved, '
+                    f'executing that much and re-requesting '
+                    f'(attempt {attempt}/{CARTESIAN_MAX_ATTEMPTS})')
+                self._execute_trajectory(
+                    response.solution,
+                    lambda ok: (
+                        self._move_cartesian(target_pose, callback, attempt + 1)
+                        if ok else callback(False)))
+                return
+
             self.get_logger().warn(
                 f'straight-line path only {response.fraction:.0%} solved, '
                 'falling back to a planned motion')
@@ -602,6 +891,8 @@ class PickPlaceOrchestrator(Node):
 
     def _move_joints(self, joints: list[float],
                      callback, duration_sec: float | None = None) -> None:
+        # Abandoned tasks must not keep driving the arm; see _guard.
+        callback = self._guard(callback)
         if not self._moveit_client.wait_for_server(timeout_sec=1.0):
             self.get_logger().warn('MoveIt2 not available, using direct joint control')
             self._send_joint_goal(joints, duration_sec, callback)
@@ -658,6 +949,8 @@ class PickPlaceOrchestrator(Node):
             lambda f: callback(f.result().result.error_code == 0))
 
     def _move_pose(self, target_pose: Pose, callback) -> None:
+        # Abandoned tasks must not keep driving the arm; see _guard.
+        callback = self._guard(callback)
         if not self._moveit_client.wait_for_server(timeout_sec=1.0):
             self.get_logger().error('MoveIt2 not available for pose motion')
             callback(False)
@@ -837,6 +1130,8 @@ class PickPlaceOrchestrator(Node):
         machine indefinitely. The result and a watchdog race each other now and
         the first one to finish owns the callback.
         """
+        # Abandoned tasks must not keep driving the arm; see _guard.
+        callback = self._guard(callback)
         if not self._gripper_client.wait_for_server(timeout_sec=2.0):
             self.get_logger().error('Gripper controller not available')
             callback(False)

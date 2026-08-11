@@ -1,11 +1,264 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <meta charset="utf-8">
-  <title>UR3e Dashboard</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UR3e Cell Dashboard</title>
+<style>
+  :root {
+    --bg: #10131a; --panel: #171b24; --line: #262c39;
+    --fg: #e6e9ef; --dim: #8b93a7; --accent: #4c8dff;
+    --ok: #35c98b; --warn: #e0b341; --bad: #e5544b;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f4f6fa; --panel: #ffffff; --line: #dfe3ec;
+      --fg: #151922; --dim: #666e80; --accent: #2f6fe0;
+      --ok: #17915f; --warn: #a97a10; --bad: #c33b32;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  h1 { font-size: 16px; margin: 0; font-weight: 650; letter-spacing: .2px; }
+  .dots { display: flex; gap: 14px; margin-left: auto; flex-wrap: wrap; }
+  .dot { display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: 12px; }
+  .dot i {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--bad);
+    display: inline-block;
+  }
+  .dot.on i { background: var(--ok); }
+  main {
+    display: grid; gap: 16px; padding: 16px 20px 28px;
+    grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
+    max-width: 1400px; margin: 0 auto;
+  }
+  section {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 14px 16px;
+  }
+  h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--dim); margin: 0 0 12px; font-weight: 600;
+  }
+  .state {
+    font-size: 26px; font-weight: 680; letter-spacing: .3px; margin-bottom: 2px;
+  }
+  .sub { color: var(--dim); font-size: 12.5px; min-height: 19px; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 5px 14px; margin-top: 12px; }
+  .kv dt { color: var(--dim); font-size: 12.5px; }
+  .kv dd {
+    margin: 0; font-variant-numeric: tabular-nums;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px;
+  }
+  .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  button {
+    font: inherit; font-weight: 560; color: var(--fg); cursor: pointer;
+    background: transparent; border: 1px solid var(--line);
+    border-radius: 7px; padding: 9px 10px; transition: .12s;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  button:disabled { opacity: .38; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover:not(:disabled) { filter: brightness(1.1); color: #fff; }
+  button.danger { border-color: var(--bad); color: var(--bad); }
+  button.danger:hover:not(:disabled) { background: var(--bad); color: #fff; }
+  .row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .row label { color: var(--dim); font-size: 12.5px; min-width: 14px; }
+  input {
+    font: inherit; width: 100%; padding: 8px 9px; border-radius: 7px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--fg);
+    font-family: ui-monospace, Menlo, monospace; font-size: 13px;
+  }
+  input:focus { outline: none; border-color: var(--accent); }
+  #toast {
+    margin-top: 10px; font-size: 12.5px; min-height: 18px; color: var(--dim);
+  }
+  #toast.ok { color: var(--ok); }
+  #toast.bad { color: var(--bad); }
+  /* The feed is the only panel that benefits from width, and leaving it as a
+     lone card on its own row left a large dead area under the grid. */
+  section.wide { grid-column: 1 / -1; }
+  .log {
+    margin: 0; padding: 0; list-style: none; max-height: 230px; overflow-y: auto;
+    font-family: ui-monospace, Menlo, monospace; font-size: 12px;
+  }
+  .log li {
+    padding: 3px 0; border-bottom: 1px solid var(--line); color: var(--dim);
+    display: flex; gap: 10px;
+  }
+  .log li:last-child { border-bottom: 0; }
+  .log b { color: var(--fg); font-weight: 500; }
+  .bars { display: grid; gap: 7px; }
+  .bar { display: grid; grid-template-columns: 108px 1fr 62px; align-items: center; gap: 9px; }
+  .bar span:first-child { color: var(--dim); font-size: 11.5px; }
+  .track { height: 5px; background: var(--line); border-radius: 3px; position: relative; }
+  .fill { position: absolute; top: 0; height: 5px; background: var(--accent); border-radius: 3px; }
+  .bar span:last-child {
+    text-align: right; font-family: ui-monospace, Menlo, monospace;
+    font-size: 11.5px; font-variant-numeric: tabular-nums;
+  }
+</style>
 </head>
 <body>
-  <h1>UR3e Pick-and-Place Dashboard</h1>
-  <p>Status: Waiting for connection...</p>
+<header>
+  <h1>UR3e Cell Dashboard</h1>
+  <div class="dots">
+    <span class="dot" id="d-orch"><i></i>orchestrator</span>
+    <span class="dot" id="d-cam"><i></i>camera</span>
+    <span class="dot" id="d-cube"><i></i>cube in reach</span>
+  </div>
+</header>
+
+<main>
+  <section>
+    <h2>Status</h2>
+    <div class="state" id="state">—</div>
+    <div class="sub" id="substate">connecting…</div>
+    <dl class="kv">
+      <dt>Active task</dt><dd id="k-task">—</dd>
+      <dt>Last result</dt><dd id="k-result">—</dd>
+      <dt>Cube</dt><dd id="k-cube">—</dd>
+      <dt>Place target</dt><dd id="k-target">—</dd>
+      <dt>Gripper</dt><dd id="k-grip">—</dd>
+    </dl>
+  </section>
+
+  <section>
+    <h2>Tasks</h2>
+    <div class="btns">
+      <button class="primary" data-task="pick_place">Pick &amp; Place</button>
+      <button data-task="home">Home</button>
+      <button data-task="open_gripper">Open Gripper</button>
+      <button data-task="close_gripper">Close Gripper</button>
+      <button data-task="retract">Retract</button>
+      <button class="danger" id="btn-stop">Stop</button>
+    </div>
+    <h2 style="margin-top:18px">Pick to a point</h2>
+    <div class="row">
+      <label for="in-x">X</label><input id="in-x" type="number" step="0.01" value="0.30">
+      <label for="in-y">Y</label><input id="in-y" type="number" step="0.01" value="0.30">
+    </div>
+    <button style="width:100%" data-task="pick_to">Pick &amp; Place to X,Y</button>
+    <div id="toast"></div>
+  </section>
+
+  <section>
+    <h2>Joints (rad)</h2>
+    <div class="bars" id="joints"><div class="sub">waiting for /joint_states…</div></div>
+  </section>
+
+  <section class="wide">
+    <h2>Activity</h2>
+    <ul class="log" id="log"><li>waiting…</li></ul>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+// Joint limits are +/-pi (config/moveit/joint_limits.yaml), so the bars map
+// that range onto 0-100%.
+const LIM = Math.PI;
+let busy = false, online = false;
+
+function setDot(el, on) { el.classList.toggle('on', !!on); }
+
+function fmtXYZ(c) {
+  return c ? `${c.x.toFixed(3)}, ${c.y.toFixed(3)}, ${c.z.toFixed(3)}` : 'not detected';
+}
+
+function render(s) {
+  online = !!s.orchestrator_online;
+  busy = !!s.busy;
+
+  setDot($('d-orch'), online);
+  setDot($('d-cam'), s.camera_online);
+  setDot($('d-cube'), s.cube && s.cube.reachable);
+
+  $('state').textContent = online ? (s.state || '—') : 'OFFLINE';
+  $('substate').textContent = !online
+    ? 'orchestrator not publishing — is motion.launch.py running?'
+    : (busy ? 'busy' : 'idle — ready for a task');
+
+  $('k-task').textContent = s.active_task || s.pending_task || '—';
+  $('k-result').textContent = s.last_result || '—';
+  $('k-cube').textContent = fmtXYZ(s.cube);
+  $('k-target').textContent = s.place_target
+    ? `${s.place_target.x.toFixed(3)}, ${s.place_target.y.toFixed(3)}` : '—';
+  $('k-grip').textContent = (s.gripper ?? 0).toFixed(3) + ' rad';
+
+  const j = s.joints || {};
+  const names = Object.keys(j);
+  $('joints').innerHTML = names.length ? names.map((n) => {
+    const v = j[n];
+    const pct = Math.min(100, Math.max(0, (v + LIM) / (2 * LIM) * 100));
+    return `<div class="bar"><span>${n.replace('_joint', '')}</span>
+      <span class="track"><span class="fill" style="left:${Math.min(pct, 50)}%;
+      width:${Math.abs(pct - 50)}%"></span></span>
+      <span>${v.toFixed(3)}</span></div>`;
+  }).join('') : '<div class="sub">waiting for /joint_states…</div>';
+
+  const log = (s.log || []).slice().reverse();
+  $('log').innerHTML = log.length ? log.map((e) =>
+    `<li><span>${e.t.toFixed(1)}</span><b>${e.text}</b></li>`).join('')
+    : '<li>no activity yet</li>';
+
+  // Everything but Stop is disabled while a task runs or the node is down.
+  document.querySelectorAll('button[data-task]').forEach((b) => {
+    b.disabled = busy || !online;
+  });
+  $('btn-stop').disabled = !online;
+}
+
+async function poll() {
+  try {
+    render(await (await fetch('/api/state')).json());
+  } catch (e) {
+    render({});
+  }
+}
+
+async function send(task) {
+  const body = { task };
+  if (task === 'pick_to') {
+    body.x = parseFloat($('in-x').value);
+    body.y = parseFloat($('in-y').value);
+    if (Number.isNaN(body.x) || Number.isNaN(body.y)) {
+      return toast('X and Y must be numbers', false);
+    }
+  }
+  try {
+    const r = await fetch('/api/task', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    toast(d.message, d.accepted);
+  } catch (e) {
+    toast('request failed: ' + e.message, false);
+  }
+  poll();
+}
+
+function toast(msg, ok) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = ok ? 'ok' : 'bad';
+}
+
+document.querySelectorAll('button[data-task]').forEach((b) =>
+  b.addEventListener('click', () => send(b.dataset.task)));
+$('btn-stop').addEventListener('click', () => send('stop'));
+
+poll();
+setInterval(poll, 400);
+</script>
 </body>
 </html>

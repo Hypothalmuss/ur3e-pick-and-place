@@ -53,10 +53,21 @@ for i in $(seq 1 45); do grep -q "You can start planning now" /tmp/ur3e_movegrou
 echo "[run_sim]   move_group ready"
 
 echo "[run_sim] launching orchestrator..."
+# The orchestrator idles until told what to do (auto:=true restores the old
+# self-looping behaviour). Drive it from the dashboard below.
 setsid nohup ros2 launch ur3e_motion motion.launch.py \
   > /tmp/ur3e_motion.log 2>&1 </dev/null & disown
 
-echo "[run_sim] DONE. Pick-and-place is running."
+echo "[run_sim] launching dashboard..."
+setsid nohup ros2 launch ur3e_dashboard dashboard.launch.py \
+  > /tmp/ur3e_dash.log 2>&1 </dev/null & disown
+for i in $(seq 1 20); do
+  curl -s --max-time 1 http://127.0.0.1:8080/api/state >/dev/null 2>&1 && break
+  sleep 1
+done
+
+echo "[run_sim] DONE. Cell is up and idle."
+echo "  DASHBOARD    : http://127.0.0.1:8080"
 echo "  watch states : grep 'State ->' /tmp/ur3e_motion.log"
 echo "  cube position: ros2 topic echo /detected_objects --once"
 echo "  stop         : $WS/stop_sim.sh"

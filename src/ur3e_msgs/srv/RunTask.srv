@@ -1,0 +1,10 @@
+# Dashboard -> orchestrator task command.
+# task is one of: home, retract, pick_place, pick_to, open_gripper,
+#                 close_gripper, stop
+# x/y are only read by pick_to and give the place target in base_link metres.
+string task
+float64 x
+float64 y
+---
+bool accepted
+string message
