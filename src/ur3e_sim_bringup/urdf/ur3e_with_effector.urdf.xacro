@@ -227,7 +227,10 @@
     <gazebo reference="${link}">
       <mu1>3.0</mu1>
       <mu2>3.0</mu2>
-      <kp>1e6</kp>
+      <!-- Must match the cube's kp in ur3e_workcell.world. ODE combines the
+           stiffness of both surfaces, so leaving the pad at 1e6 keeps the
+           contact hard no matter how soft the object is. -->
+      <kp>1e5</kp>
       <kd>1.0</kd>
       <minDepth>0.0</minDepth>
       <maxVel>0.01</maxVel>

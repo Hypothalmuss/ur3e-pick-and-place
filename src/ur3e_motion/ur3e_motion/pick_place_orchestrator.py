@@ -46,10 +46,13 @@ GRIPPER_CALIBRATION = [
 ]
 
 OBJECT_SIZE = 0.06       # target cube edge length (m)
-# Pad interference. The grip is real friction now, so this has to be deep enough
-# to generate an actual normal force - the contact dead-band (min_depth plus
-# contact_surface_layer) swallows roughly the first millimetre.
-GRIPPER_SQUEEZE = 0.010
+# Pad interference, i.e. how far inside the object's width the pads are told to
+# close. Measured across 0.004 / 0.007 / 0.010 with the friction grasp: the
+# outcome barely changed (lift 91-95 mm, launch 0.99-1.13 m/s), because the
+# knuckle is position-commanded and cannot stall on contact whatever the target.
+# The grasp is carried by the attach-on-close plugin now (use_grasp_fix), so
+# this only has to be deep enough to cross that plugin's attach_threshold.
+GRIPPER_SQUEEZE = 0.007
 
 
 def gripper_angle_for_width(width: float) -> float:
@@ -69,18 +72,25 @@ GRIPPER_JOINT = 'robotiq_85_left_knuckle_joint'
 # cycle sat in GRASP_CLOSE indefinitely.
 GRIPPER_TIMEOUT = 6.0       # s
 GRIPPER_POSITION_TOL = 0.06  # rad; close enough to call the move done
+# NOTE: the close is a single goal on purpose. Stepping the command in over
+# ~1 s (10 increments, fire-and-forget) was tried and is far worse - each new
+# goal preempts the last, the mimic-joint PID chases a jittering target and
+# goes unstable, and the cube left at 4.7 m/s and travelled 2.5 m. If the
+# fast close is revisited, rate-limit it inside the controller or the mimic
+# plugin, not by spamming action goals from here.
 
 GRIPPER_OPEN = 0.0
 # Closing to a fixed 0.70 rad asked for a 10.6 mm pad gap around the 60 mm cube,
 # so the fingers drove ~25 mm into it. Derive the angle from the object width
-# instead: 0.06 m less a 4 mm squeeze puts the knuckle at ~0.27 rad, where the
-# pads actually rest on the faces. The grasp plugin's attach_threshold in
-# ur3e_with_effector.urdf.xacro must stay below this value.
+# instead: 0.06 m less the 7 mm squeeze puts the knuckle at ~0.33 rad (measured
+# 0.327 in Gazebo), where the pads rest on the faces. The grasp plugin's
+# attach_threshold in ur3e_with_effector.urdf.xacro (0.20) must stay below this
+# value or it never latches.
 GRIPPER_CLOSED = gripper_angle_for_width(OBJECT_SIZE - GRIPPER_SQUEEZE)
 
-# tool0 height for the pre-grasp pose. The gripper reaches ~0.16 m below tool0,
-# so 0.30 keeps the finger tips ~0.14 m up, clearing the 0.06 m cube before the
-# straight vertical descent to the grasp (avoids clipping/knocking it).
+# tool0 height for the pre-grasp pose. Measured from TF, the pads sit 0.119 m
+# below tool0, so 0.30 keeps the finger tips ~0.18 m up, well clear of the
+# 0.06 m cube before the straight vertical descent (avoids clipping/knocking it).
 APPROACH_HEIGHT = 0.30
 LIFT_HEIGHT = 0.32       # tool0 height for retract/lift after grasp
 # Place target in the reachable front-left of the workspace (the pick is at
@@ -88,10 +98,13 @@ LIFT_HEIGHT = 0.32       # tool0 height for retract/lift after grasp
 PLACE_X = 0.30
 PLACE_Y = 0.30
 PLACE_Z = 0.0
-# tool0 z at grasp/place-down. The Robotiq 2F-85 reaches ~0.16 m below tool0,
-# so tool0 at 0.18 puts the finger tips around the 0.06 m cube (perception
-# reports the cube on the ground plane at z=0).
-GRASP_Z_OFFSET = 0.18
+# tool0 z at grasp/place-down. Measured from TF (base_link -> finger tip) the
+# pads sit 0.119 m below tool0, not the 0.16 m previously assumed. At the old
+# 0.18 the tips bottomed out at z=0.061 - flat on the lid of the 0.06 m cube,
+# which tapped it away instead of gripping it. 0.15 puts them at ~0.031, level
+# with the cube's mid-height, so the pads close on the side faces. Perception
+# reports the cube on the ground plane at z=0, so this offset is absolute.
+GRASP_Z_OFFSET = 0.15
 
 ARM_JOINTS = [
     'shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint',
@@ -309,6 +322,15 @@ class PickPlaceOrchestrator(Node):
             orientation=TOOL0_DOWN_ORI,
         )
         self._set_state(State.GRASP)
+        # Drop the cube from the world before descending. At the grasp pose the
+        # pads straddle the cube's mid-height, so the gripper links genuinely
+        # overlap its collision box - with it still in the scene every
+        # collision-checked fallback is rejected (compute_ik returns
+        # NO_IK_SOLUTION and the descent never happens). The Cartesian path
+        # already runs with avoid_collisions=False for the same reason; this
+        # extends that to the plan/IK fallbacks. It comes back attached to the
+        # tool once the gripper has closed.
+        self._scene_remove_cube()
         # Straight down onto the cube - a planned motion arcs in sideways.
         self._move_cartesian(grasp, self._grasp_close)
 
@@ -358,6 +380,13 @@ class PickPlaceOrchestrator(Node):
             orientation=TOOL0_DOWN_ORI,
         )
         self._set_state(State.PLACE_DOWN)
+        # Drop the cube from the scene before descending, for the mirror of the
+        # reason it is dropped before the grasp: at the place height the
+        # attached box comes to rest on the ground plane, and a collision-
+        # checked fallback rejects that as a contact (compute_ik returns
+        # NO_IK_SOLUTION). The gripper still physically holds it - only the
+        # collision model is stood down for the descent.
+        self._scene_remove_cube()
         # Straight down again, so the cube is set down instead of swept down.
         self._move_cartesian(place, self._release)
 
@@ -367,7 +396,6 @@ class PickPlaceOrchestrator(Node):
             return
 
         self._set_state(State.RELEASE)
-        self._scene_remove_cube()
         self._gripper(GRIPPER_OPEN, self._depart)
 
     def _depart(self, success: bool) -> None:
@@ -458,10 +486,16 @@ class PickPlaceOrchestrator(Node):
         self._apply_scene(scene, 'add cube')
 
     def _scene_attach_cube(self) -> None:
-        """Move the cube from the world onto the tool so the carry plans with it."""
+        """Put the cube on the tool so the carry plans with it.
+
+        Carries its own geometry rather than promoting an existing world
+        object: the cube is removed from the scene before the descent, so by
+        the time this runs there is nothing left to promote and a bare ADD
+        would attach an empty object.
+        """
         aco = AttachedCollisionObject()
         aco.link_name = GRASP_LINK
-        aco.object.id = CUBE_ID
+        aco.object = self._cube_collision_object(self._cx, self._cy)
         aco.object.operation = CollisionObject.ADD
         aco.touch_links = GRIPPER_TOUCH_LINKS
         scene = PlanningScene()

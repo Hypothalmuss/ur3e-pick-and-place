@@ -248,3 +248,57 @@ or a contact sensor to confirm where the pads actually touch.
 - MoveIt pose planning fails (START_STATE_COLLISION) near the ground and falls back
   to `/compute_ik` + direct joint control every pick; functional but the transfer
   arc can swing. Perception still reports z=0 (ground-plane projection).
+
+## 2026-08-11: Working pick-and-place, demo recorded
+
+The friction grasp was abandoned in favour of the attach-on-close plugin
+(`use_grasp_fix`, now the default in `bringup.launch.py`). Cube is picked at
+(0.405, 0.008) and placed at (0.308, 0.306) — see `demo/pick_and_place.mp4`.
+
+### The cube was being batted away, not gripped
+Measured with `/gazebo/model_states` sampled at 4 Hz against `/joint_states`:
+
+| squeeze | peak cube z | eject speed | final x |
+|---|---|---|---|
+| 10 mm | 0.090 | 0.91 m/s | 0.565 |
+| 4 mm  | 0.091 | 0.99 m/s | 0.581 |
+| 7 mm  | 0.095 | 1.13 m/s | 0.560 |
+
+Identical across a 2.5x range, because squeeze is not the controlling variable.
+The knuckle goes from -0.008 to 0.327 rad in under 0.3 s — `gazebo_ros2_control`
+drives it by `SetPosition`, so it cannot stall on contact and the pads sweep
+through the cube. It was displaced 57 mm before the fingers finished closing.
+
+Ramping the close (10 increments over ~1 s, fire-and-forget goals) is much worse,
+not better: each goal preempts the last, the mimic PID chases a jittering target
+and goes unstable, and the cube left at 4.7 m/s and travelled 2.5 m. Reverted. Any
+retry must rate-limit inside the controller or the mimic plugin.
+
+### Contact stiffness had to drop on both surfaces
+Cube `kp` 1e6 -> 1e5 *and* finger-pad `kp` 1e6 -> 1e5. ODE combines the two
+surfaces, so softening only the cube leaves the contact hard (series combination
+is dominated by the softer one: 9.1e4 vs 5e4). With cube mass 0.08 -> 0.15 kg this
+took the throw from ~260 mm (which parked the cube under the robot, out of reach,
+and deadlocked the state machine at 258 failed cycles) down to ~50 mm.
+0.5 kg measured calmer still (0.70 m/s peak, 12 mm hop) but 0.15 kg was chosen.
+
+### Grasp height was 41 mm off
+`GRASP_Z_OFFSET` assumed the gripper reaches 0.16 m below tool0. Measured from TF
+it is 0.119 m, so at 0.18 the finger tips bottomed out at z=0.061 — flat on the lid
+of the 0.06 m cube. Now 0.15, putting the pads at ~0.031, level with mid-height.
+
+### Planning scene blocked its own descents
+At mid-cube height the gripper links genuinely overlap the cube's collision box, so
+every collision-checked fallback was rejected (`compute_ik` -> NO_IK_SOLUTION) and
+the descent never ran. The cube is now dropped from the scene before the grasp
+descent and re-attached (carrying its own geometry) once closed; the same is done
+before the place-down descent, where the attached box otherwise rests on the ground
+plane. All four Cartesian segments now solve 100% with no fallbacks.
+
+### Residual
+- PLACE_DOWN still fails intermittently (~1 cycle in 2 in one run): straight-line
+  path solves ~39%, falls back, and `compute_ik` returns -31. Cause not identified.
+- `planning scene remove cube rejected` during error recovery — `_scene_remove_cube`
+  is called on an already-removed object. Harmless but the recovery path is untidy.
+- Grasp is kinematic (plugin-held): during carry the cube ignores gravity and cannot
+  be dragged in the GUI.

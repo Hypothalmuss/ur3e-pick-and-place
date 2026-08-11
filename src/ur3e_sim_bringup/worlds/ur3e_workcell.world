@@ -76,10 +76,16 @@
       <pose>0.4 0 0.03 0 0 0</pose>
       <link name="link">
         <inertial>
-          <mass>0.08</mass>
+          <!-- 0.15 kg. A light cube gets flung by the pad contact - at 80 g it
+               was thrown ~260 mm on first touch and ended up under the robot,
+               out of reach. 0.15 kg with the kp=1e5 contact below keeps it
+               within ~50 mm. (0.5 kg measured calmer still, but 0.15 kg is the
+               chosen setting.) Inertia is m*(a^2+b^2)/12 for the 60 mm box and
+               must track the mass. -->
+          <mass>0.15</mass>
           <inertia>
-            <ixx>4.8e-5</ixx><ixy>0</ixy><ixz>0</ixz>
-            <iyy>4.8e-5</iyy><iyz>0</iyz><izz>4.8e-5</izz>
+            <ixx>9.0e-5</ixx><ixy>0</ixy><ixz>0</ixz>
+            <iyy>9.0e-5</iyy><iyz>0</iyz><izz>9.0e-5</izz>
           </inertia>
         </inertial>
         <visual name="visual">
@@ -113,7 +119,13 @@
             </friction>
             <contact>
               <ode>
-                <kp>1e6</kp>
+                <!-- kp 1e5, not 1e6. At 1e6 a single millimetre of pad
+                     penetration is 1000 N, which threw the cube ~26 cm on
+                     first contact. The finger pads in
+                     ur3e_with_effector.urdf.xacro must carry the same value -
+                     ODE combines the two surfaces, so a stiff pad against a
+                     soft cube is still a stiff contact. -->
+                <kp>1e5</kp>
                 <kd>1.0</kd>
                 <max_vel>0.01</max_vel>
                 <min_depth>0.0</min_depth>

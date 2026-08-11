@@ -29,7 +29,13 @@ def generate_launch_description():
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         DeclareLaunchArgument('gazebo_gui', default_value='true'),
         DeclareLaunchArgument('use_mimic_plugin', default_value='true'),
-        DeclareLaunchArgument('use_grasp_fix', default_value='false'),
+        # On by default: the friction grasp cannot hold the cube. The knuckle is
+        # position-commanded through gazebo_ros2_control, so it teleports shut
+        # and cannot stall on contact - the pads bat the cube away (measured 57 mm
+        # of displacement before the fingers finished closing, then a 1 m/s
+        # launch). The attach-on-close plugin sidesteps that by fixing the cube
+        # to the gripper. Pass use_grasp_fix:=false for the friction grasp.
+        DeclareLaunchArgument('use_grasp_fix', default_value='true'),
 
         Node(
             package='robot_state_publisher',
