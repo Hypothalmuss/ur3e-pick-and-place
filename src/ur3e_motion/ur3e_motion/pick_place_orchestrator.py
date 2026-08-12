@@ -95,7 +95,12 @@ GRIPPER_CLOSED = gripper_angle_for_width(OBJECT_SIZE - GRIPPER_SQUEEZE)
 # tool0 height for the pre-grasp pose. Measured from TF, the pads sit 0.119 m
 # below tool0, so 0.30 keeps the finger tips ~0.18 m up, well clear of the
 # 0.06 m cube before the straight vertical descent (avoids clipping/knocking it).
-APPROACH_HEIGHT = 0.30
+# 0.22, not 0.30. The straight-line descent from hover to grasp is the
+# fragile part of the cycle: at 0.30 it is a 150 mm line and solved only
+# ~50% of the time in a scattered multi-cube scene. At 0.22 it is 70 mm and
+# solves outright. The pads sit 0.119 m below tool0, so this still holds
+# them 101 mm up - 41 mm clear of the 60 mm cube before the descent starts.
+APPROACH_HEIGHT = 0.22
 LIFT_HEIGHT = 0.32       # tool0 height for retract/lift after grasp
 # Place target in the reachable front-left of the workspace (the pick is at
 # ~0.4, 0). Kept at a similar radius to the pick so the transfer is a clean arc.
@@ -126,8 +131,50 @@ TOOL0_DOWN_ORI = Quaternion(x=1.0, y=0.0, z=0.0, w=0.0)
 
 REACH_MAX = 0.55  # conservative UR3e working radius, accounting for gripper offset
 
-# Safe velocity limits for direct joint control (rad/s)
-SAFE_VELOCITY = 0.4  # conservative max joint velocity for simulation
+# --- Reach zones -------------------------------------------------------------
+# Radius from base_link, on the table plane. Inside ZONE_NEAR the arm cannot get
+# the tool vertical over the object without folding into itself - a cube knocked
+# in there is unrecoverable and used to deadlock the cycle. Beyond ZONE_FAR the
+# descent stops solving. Between them everything has worked: measured good picks
+# at r = 0.405, 0.418, 0.424, 0.430, 0.432, 0.474.
+ZONE_NEAR = 0.24
+ZONE_FAR = 0.50
+
+
+def zone_of(x: float, y: float) -> str:
+    r = math.hypot(x, y)
+    if r < ZONE_NEAR:
+        return 'too_close'
+    if r > ZONE_FAR:
+        return 'too_far'
+    return 'perfect'
+
+
+# --- Drop zone ---------------------------------------------------------------
+# The red square drawn on the ground in ur3e_workcell.world. Keep these in step
+# with the drop_zone_* models there. Sized and placed so all four corners sit in
+# the perfect annulus.
+DROP_ZONE_X = 0.30
+DROP_ZONE_Y = 0.22
+DROP_ZONE_HALF = 0.08
+# Where cubes get stacked inside the square. Four slots on a 90 mm pitch, which
+# leaves a 30 mm gap between 60 mm cubes so a place never lands on a neighbour.
+DROP_SLOTS = [
+    (DROP_ZONE_X - 0.045, DROP_ZONE_Y - 0.045),
+    (DROP_ZONE_X + 0.045, DROP_ZONE_Y - 0.045),
+    (DROP_ZONE_X - 0.045, DROP_ZONE_Y + 0.045),
+    (DROP_ZONE_X + 0.045, DROP_ZONE_Y + 0.045),
+]
+# A cube counts as already home if it is within this of a slot centre.
+SLOT_OCCUPIED_RADIUS = 0.055
+
+
+def in_drop_zone(x: float, y: float) -> bool:
+    return (abs(x - DROP_ZONE_X) <= DROP_ZONE_HALF
+            and abs(y - DROP_ZONE_Y) <= DROP_ZONE_HALF)
+
+# Paces the direct-joint fallback used when MoveIt is unavailable (rad/s).
+SAFE_VELOCITY = 1.5
 
 # --- Planning scene ---------------------------------------------------------
 # The cube used to exist only in Gazebo, so MoveIt planned straight through it
@@ -156,19 +203,41 @@ CARTESIAN_MIN_FRACTION = 0.9  # accept the path only if ~fully solved
 # converge, so it goes to the planned fallback instead.
 CARTESIAN_RETRY_MIN_FRACTION = 0.15
 CARTESIAN_MAX_ATTEMPTS = 4
+# If the place descent still cannot be solved, re-approach the hover pose
+# from a slightly different height to land in another IK branch.
+# After each place the arm parks and perception needs a moment to see the
+# settled scene before the next cube is chosen; picking from a stale frame
+# sends the gripper to where a cube used to be.
+TIDY_RESCAN_DELAY = 2.0  # s
+# Hard stop on a sweep. Without it a cube that cannot be picked is retried
+# forever: the blacklist used to key on the perception id, but ids are
+# reassigned whenever a cube is occluded or shoved, so every retry looked
+# like a brand-new cube (one run reached id #59 and ran for 10 minutes).
+TIDY_MAX_ATTEMPTS = 10
+# Blacklisted cubes are remembered by position on this grid, which survives
+# id churn.
+TIDY_BLACKLIST_GRID = 0.05  # m
+PLACE_MAX_RETRIES = 3
+# Retries LOWER the hover, they do not raise it. Raising it was the original
+# design and it made things worse: a higher hover is a longer descent, so
+# each retry was strictly harder than the attempt before it (99 re-approaches
+# in one sweep, 17 outright failures). Lowering shortens the line and lands
+# the arm in a different IK branch, which was the actual goal.
+PLACE_RETRY_STEP = 0.02   # m removed from the hover height per retry
+HOVER_MIN = 0.18          # never drop the pads closer than ~60 mm above the cube
 
 # Largest joint displacement an IK solution may ask for before it is treated as
 # a reconfiguration rather than a move. Anything bigger is the arm flipping to a
 # different branch, which is what produced the wild swings.
 MAX_IK_JOINT_JUMP = 2.0  # rad
 
-# The cube is held by friction, so the transfer has to stay gentle - at 0.3 the
-# arm shed it mid-swing. Lower scaling keeps the lateral acceleration under what
-# the pads can hold, and makes the motion look less frantic besides. Cartesian
-# segments ignore these (Humble has no scaling field) and are paced by the
-# velocity limits in config/moveit/joint_limits.yaml.
-CARRY_VEL_SCALE = 0.15
-CARRY_ACC_SCALE = 0.10
+# These were 0.15/0.10 because the cube was held by friction and a brisk swing
+# shed it. The grasp is a rigid plugin attach now (use_grasp_fix), so the carry
+# cannot be shaken loose and the old scaling just made every cycle take minutes.
+# Cartesian segments ignore these (Humble has no scaling field) and are paced by
+# the velocity limits in config/moveit/joint_limits.yaml instead.
+CARRY_VEL_SCALE = 0.6
+CARRY_ACC_SCALE = 0.4
 
 
 # Tasks the dashboard may request. pick_place uses the default place target;
@@ -180,6 +249,7 @@ TASKS = {
     'pick_to',
     'open_gripper',
     'close_gripper',
+    'tidy',
     'stop',
 }
 
@@ -224,6 +294,15 @@ class PickPlaceOrchestrator(Node):
 
         self._state = State.STARTUP
         self._cube_pose: Pose | None = None
+        self._cubes: dict[int, tuple[float, float]] = {}
+        self._tidy_active = False
+        self._tidy_done = 0
+        self._tidy_failed: set = set()
+        self._tidy_attempts = 0
+        self._last_slot = None
+        self._last_pick_cell = None
+        self._tidy_resume_at = 0.0
+        self._target_id: int | None = None
         self._last_perception_log_time = 0.0
         self._timer = self.create_timer(0.5, self._tick, callback_group=cbg)
 
@@ -251,6 +330,12 @@ class PickPlaceOrchestrator(Node):
         self._task_y = PLACE_Y
         self._place_x = PLACE_X
         self._place_y = PLACE_Y
+        self._place_retries = 0
+        self._grasp_retries = 0
+        # move_group outlives this node, so its scene has to be wiped once at
+        # startup before anything is planned - see the STARTUP branch of _tick.
+        self._scene_cleared = False
+        self._scene_obstacles: set = set()
         self._stop_requested = False
         self._last_result = ''
         self._log = deque(maxlen=40)
@@ -373,6 +458,19 @@ class PickPlaceOrchestrator(Node):
             'pending_task': self._pending_task,
             'last_result': self._last_result,
             'cube': cube_out,
+            'cubes': [
+                {'id': i, 'x': round(x, 4), 'y': round(y, 4),
+                 'r': round(math.hypot(x, y), 4),
+                 'zone': zone_of(x, y),
+                 'home': in_drop_zone(x, y)}
+                for i, (x, y) in sorted(self._cubes.items())
+            ],
+            'zones': {'near': ZONE_NEAR, 'far': ZONE_FAR},
+            'drop_zone': {'x': DROP_ZONE_X, 'y': DROP_ZONE_Y,
+                          'half': DROP_ZONE_HALF},
+            'target_id': self._target_id,
+            'tidy': {'active': self._tidy_active, 'placed': self._tidy_done,
+                     'skipped': len(self._tidy_failed)},
             'joints': joints,
             'gripper': round(
                 self._current_joint_positions.get(GRIPPER_JOINT, 0.0), 4),
@@ -385,6 +483,8 @@ class PickPlaceOrchestrator(Node):
         """Dispatch one accepted task. Called from _tick when idle."""
         self._active_task = task
         self._cycle_active = True
+        self._place_retries = 0
+        self._grasp_retries = 0
         # New task owns the arm from here; anything still in flight is stale.
         self._abandon()
 
@@ -398,13 +498,105 @@ class PickPlaceOrchestrator(Node):
             self._gripper(GRIPPER_OPEN, self._simple_done)
         elif task == 'close_gripper':
             self._gripper(GRIPPER_CLOSED, self._simple_done)
+        elif task == 'tidy':
+            self._tidy_active = True
+            self._tidy_done = 0
+            self._tidy_failed.clear()
+            self._tidy_attempts = 0
+            self._tidy_step()
         else:  # pick_place / pick_to
             if task == 'pick_to':
                 self._place_x, self._place_y = self._task_x, self._task_y
             else:
                 self._place_x, self._place_y = PLACE_X, PLACE_Y
-            self._note(f'placing at ({self._place_x:.3f}, {self._place_y:.3f})')
+            if not self._select_target():
+                self._finish_task('no cube to pick')
+                return
+            self._note(f'cube #{self._target_id} -> '
+                       f'({self._place_x:.3f}, {self._place_y:.3f})')
             self._approach(True)
+
+    def _select_target(self, exclude: set | None = None) -> bool:
+        """Aim at the nearest pickable cube. False if there is nothing to take."""
+        for cid, x, y in self._pickable_cubes():
+            if exclude and self._cell(x, y) in exclude:
+                continue
+            self._target_id = cid
+            self._cx, self._cy, self._cz = x, y, 0.0
+            return True
+        self._target_id = None
+        return False
+
+    def _tidy_step(self) -> None:
+        """Pick the next cube outside the drop zone and put it in a free slot."""
+        self._verify_last_place()
+        self._tidy_attempts += 1
+        if self._tidy_attempts > TIDY_MAX_ATTEMPTS:
+            self._tidy_active = False
+            self._finish_task(
+                f'tidy gave up after {TIDY_MAX_ATTEMPTS} attempts, '
+                f'{self._tidy_done} placed')
+            return
+        if not self._select_target(exclude=self._tidy_failed):
+            done, bad = self._tidy_done, len(self._tidy_failed)
+            self._tidy_active = False
+            if done and bad:
+                msg = f'tidy done: {done} placed, {bad} skipped'
+            elif done:
+                msg = f'tidy complete: {done} cube(s) placed'
+            elif bad:
+                msg = f'tidy failed: {bad} cube(s) unreachable'
+            else:
+                msg = 'tidy: nothing outside the drop zone'
+            self._finish_task(msg)
+            return
+
+        slot = self._free_slot()
+        if slot is None:
+            self._tidy_active = False
+            self._finish_task('tidy stopped: drop zone full')
+            return
+
+        self._place_x, self._place_y = slot
+        self._last_slot = slot
+        self._last_pick_cell = self._cell(self._cx, self._cy)
+        self._place_retries = 0
+        self._grasp_retries = 0
+        self._note(f'tidy: cube #{self._target_id} -> slot '
+                   f'({self._place_x:.3f}, {self._place_y:.3f})')
+        self._approach(True)
+
+    def _verify_last_place(self) -> None:
+        """Did the previous cycle actually deliver a cube to its slot?
+
+        A pick that clips the cube instead of grasping it still runs the
+        whole cycle and comes back 'successful', so the only trustworthy
+        check is whether a cube is now sitting in the slot we aimed at.
+        """
+        if self._last_slot is None:
+            return
+        sx, sy = self._last_slot
+        landed = any(math.hypot(x - sx, y - sy) < SLOT_OCCUPIED_RADIUS
+                     for x, y in self._cubes.values())
+        if landed:
+            self._tidy_done += 1
+            self._note(f'tidy: cube {self._tidy_done} confirmed in slot')
+        else:
+            if self._last_pick_cell is not None:
+                self._tidy_failed.add(self._last_pick_cell)
+            self._note('tidy: cube was displaced, not carried - skipping it')
+        self._last_slot = None
+        self._last_pick_cell = None
+
+    def _finish_task(self, message: str) -> None:
+        """End the current task cleanly with a message for the dashboard."""
+        self._cycle_active = False
+        self._tidy_active = False
+        self._last_result = message
+        self._note(message)
+        self._active_task = None
+        self._target_id = None
+        self._set_state(State.WAITING)
 
     def _simple_done(self, success: bool) -> None:
         self._cycle_active = False
@@ -423,20 +615,61 @@ class PickPlaceOrchestrator(Node):
         return max(self._max_joint_displacement(target_joints) / SAFE_VELOCITY, 1.0)
 
     def _perception_cb(self, msg: DetectedObjectArray) -> None:
-        if msg.objects and self._state == State.WAITING:
-            self._cube_pose = msg.objects[0].pose
-            now = self.get_clock().now().nanoseconds / 1e9
-            if now - self._last_perception_log_time >= 2.0:
-                self.get_logger().info(
-                    f'Cube at ({self._cube_pose.position.x:.3f}, '
-                    f'{self._cube_pose.position.y:.3f}, '
-                    f'{self._cube_pose.position.z:.3f})')
-                self._last_perception_log_time = now
+        # Only refresh while idle. Mid-cycle the carried cube is seen in the
+        # gripper (or not at all), and letting that overwrite the target would
+        # move the goalposts under a running pick.
+        if self._state != State.WAITING or self._busy():
+            return
+
+        self._cubes = {
+            o.aruco_id: (o.pose.position.x, o.pose.position.y)
+            for o in msg.objects
+        }
+        self._cube_pose = msg.objects[0].pose if msg.objects else None
+
+        now = self.get_clock().now().nanoseconds / 1e9
+        if self._cubes and now - self._last_perception_log_time >= 2.0:
+            summary = ', '.join(
+                f'#{i}({x:.2f},{y:.2f}){zone_of(x, y)[0]}'
+                for i, (x, y) in sorted(self._cubes.items()))
+            self.get_logger().info(f'{len(self._cubes)} cube(s): {summary}')
+            self._last_perception_log_time = now
+
+    @staticmethod
+    def _cell(x: float, y: float) -> tuple:
+        """Coarse position key, stable across id reassignment."""
+        return (round(x / TIDY_BLACKLIST_GRID), round(y / TIDY_BLACKLIST_GRID))
+
+    def _pickable_cubes(self) -> list:
+        """Cubes outside the drop zone that are actually reachable."""
+        return sorted(
+            ((i, x, y) for i, (x, y) in self._cubes.items()
+             if zone_of(x, y) == 'perfect' and not in_drop_zone(x, y)),
+            key=lambda c: math.hypot(c[1], c[2]))
+
+    def _free_slot(self):
+        """First drop slot with no cube sitting in it."""
+        for sx, sy in DROP_SLOTS:
+            if not any(math.hypot(x - sx, y - sy) < SLOT_OCCUPIED_RADIUS
+                       for x, y in self._cubes.values()):
+                return sx, sy
+        return None
 
     def _tick(self) -> None:
         if self._state == State.STARTUP:
-            self._set_state(State.HOME)
-            self._move_joints(HOME_JOINTS, self._startup_done)
+            # move_group outlives this node, so a restart inherits whatever
+            # scene the previous run left behind. If that run died mid-carry
+            # the cube is still attached to tool0 there, and every plan comes
+            # back INVALID_MOTION_PLAN - the arm never even reaches HOME. Wipe
+            # it before the first move.
+            if not self._scene_cleared:
+                self._scene_cleared = True
+                self.get_logger().info('clearing any stale planning scene')
+                self._scene_clear_obstacles()
+                self._scene_remove_cube(
+                    then=lambda: self._start_home())
+                return
+            self._start_home()
             return
 
         # A stop drops into the normal ERROR recovery (reopen the gripper, drop
@@ -470,6 +703,16 @@ class PickPlaceOrchestrator(Node):
         if self._cycle_active:
             return
 
+        # Resume a tidy sweep once perception has had a look at the new scene.
+        if self._tidy_active:
+            if (self.get_clock().now().nanoseconds / 1e9
+                    >= self._tidy_resume_at):
+                self._cycle_active = True
+                self._place_retries = 0
+                self._grasp_retries = 0
+                self._tidy_step()
+            return
+
         task = self._pending_task
         if task is None:
             # Only the original standalone mode starts a cycle unprompted.
@@ -499,6 +742,10 @@ class PickPlaceOrchestrator(Node):
         self._last_result = ''
         self._start_task(task)
 
+    def _start_home(self) -> None:
+        self._set_state(State.HOME)
+        self._move_joints(HOME_JOINTS, self._startup_done)
+
     def _startup_done(self, success: bool) -> None:
         if not success:
             self.get_logger().warn('Startup HOME move failed, retrying')
@@ -512,23 +759,32 @@ class PickPlaceOrchestrator(Node):
             self._set_state(State.ERROR)
             return
 
-        cube = self._cube_pose
-        if cube is None:
+        # _cx/_cy/_cz are chosen by _start_task (or the tidy loop) before this
+        # runs, so a multi-cube scene picks a specific cube rather than whatever
+        # perception happened to list first.
+        if self._target_id is None:
             self._set_state(State.ERROR)
             return
 
-        self._cx = cube.position.x
-        self._cy = cube.position.y
-        self._cz = cube.position.z
+        # Every other cube is an obstacle. Without this MoveIt only knows about
+        # the one being picked and plans straight through the rest - in a
+        # three-cube sweep the arm shoved two of them 130-160 mm out of the
+        # workspace while transferring the first.
+        self._scene_sync_obstacles()
 
         # Tell MoveIt the cube is there before any motion is planned towards it.
         self._scene_add_cube(self._cx, self._cy)
 
+        # Each retry lifts the hover a little, which puts the arm in a
+        # different IK branch - the descent's feasibility depends on which
+        # branch the free plan into this pose happened to choose.
         approach = Pose(
             position=Point(
                 x=self._cx,
                 y=self._cy,
-                z=self._cz + APPROACH_HEIGHT,
+                z=self._cz + max(
+                    HOVER_MIN,
+                    APPROACH_HEIGHT - PLACE_RETRY_STEP * self._grasp_retries),
             ),
             orientation=TOOL0_DOWN_ORI,
         )
@@ -561,7 +817,32 @@ class PickPlaceOrchestrator(Node):
         # lands it still sees the cube and fails.
         self._scene_remove_cube(
             # Straight down onto the cube - a planned motion arcs in sideways.
-            then=lambda: self._move_cartesian(grasp, self._grasp_close))
+            then=lambda: self._move_cartesian(
+                grasp, self._grasp_descent_done))
+
+    def _grasp_descent_done(self, success: bool) -> None:
+        """Retry the approach rather than failing the pick.
+
+        Same reasoning as _place_down_done: a descent that will not solve
+        means the arm is in a configuration it cannot go straight down
+        from, not that the cube is unreachable. Re-approaching from a
+        different hover height lands it in another branch.
+        """
+        if success:
+            self._grasp_close(True)
+            return
+
+        self._grasp_retries += 1
+        if self._grasp_retries <= PLACE_MAX_RETRIES:
+            self.get_logger().warn(
+                f'grasp descent failed, re-approaching '
+                f'({self._grasp_retries}/{PLACE_MAX_RETRIES})')
+            self._note(f'grasp descent retry {self._grasp_retries}')
+            self._approach(True)
+            return
+
+        self.get_logger().error('grasp descent failed after retries')
+        self._set_state(State.ERROR)
 
     def _grasp_close(self, success: bool) -> None:
         if not success:
@@ -592,9 +873,16 @@ class PickPlaceOrchestrator(Node):
             self._set_state(State.ERROR)
             return
 
+        # Hover at APPROACH_HEIGHT, not LIFT_HEIGHT: this is the same geometry
+        # as the grasp descent, which solves 100% consistently. Each retry
+        # nudges the hover up a little, which lands the arm in a different IK
+        # branch - the descent's feasibility depends entirely on which branch
+        # the free plan into this pose happened to pick.
+        hover = max(HOVER_MIN,
+                    APPROACH_HEIGHT - PLACE_RETRY_STEP * self._place_retries)
         place = Pose(
             position=Point(x=self._place_x, y=self._place_y,
-                           z=PLACE_Z + LIFT_HEIGHT),
+                           z=PLACE_Z + hover),
             orientation=TOOL0_DOWN_ORI,
         )
         self._set_state(State.PLACE)
@@ -626,7 +914,35 @@ class PickPlaceOrchestrator(Node):
         # then dropped the cube from 0.32 m instead of placing it.
         self._scene_remove_cube(
             # Straight down again, so the cube is set down not swept down.
-            then=lambda: self._move_cartesian(place, self._release))
+            then=lambda: self._move_cartesian(place, self._place_down_done))
+
+    def _place_down_done(self, success: bool) -> None:
+        """Retry the whole place segment rather than failing the cycle.
+
+        A failed descent means the arm is in a configuration it cannot go
+        straight down from - not that the place is impossible. Re-approaching
+        from a slightly different hover height puts it in another branch, and
+        that has been enough every time. Failing here instead used to abort the
+        cycle into recovery, which dropped the cube from hover height.
+        """
+        if success:
+            self._release(True)
+            return
+
+        self._place_retries += 1
+        if self._place_retries <= PLACE_MAX_RETRIES:
+            self.get_logger().warn(
+                f'place descent failed, re-approaching '
+                f'({self._place_retries}/{PLACE_MAX_RETRIES})')
+            self._note(f'place descent retry {self._place_retries}')
+            # The cube is still attached in reality; put it back in the scene
+            # so the re-approach plans with it, matching the carry.
+            self._scene_attach_cube()
+            self._place(True)
+            return
+
+        self.get_logger().error('place descent failed after retries')
+        self._set_state(State.ERROR)
 
     def _release(self, success: bool) -> None:
         if not success:
@@ -660,11 +976,27 @@ class PickPlaceOrchestrator(Node):
 
     def _reset(self, success: bool = True) -> None:
         self._cycle_active = False
+        self._cube_pose = None
+        self._target_id = None
+
+        if self._tidy_active:
+            # One cube home; go round again once perception has seen the
+            # settled scene. _tick picks this up after TIDY_RESCAN_DELAY.
+            # Success is not assumed here - the cycle can complete having
+            # shoved the cube instead of carrying it, and reporting that as
+            # 'placed' made the sweep claim 2 when only 1 had arrived. The
+            # next rescan checks the slot and counts it then.
+            self._last_result = f'tidy: {self._tidy_done} placed'
+            self._note('tidy: cycle done, verifying on next scan')
+            self._tidy_resume_at = (
+                self.get_clock().now().nanoseconds / 1e9 + TIDY_RESCAN_DELAY)
+            self._set_state(State.WAITING)
+            return
+
         self._last_result = 'ok'
         self._note(f'{self._active_task or "pick_place"}: ok')
         self._active_task = None
         self._set_state(State.WAITING)
-        self._cube_pose = None
         self.get_logger().info('Ready for next pick-and-place')
 
     def _recover_home(self, success: bool = True) -> None:
@@ -679,6 +1011,18 @@ class PickPlaceOrchestrator(Node):
         self._recovering = False
         self._cycle_active = False
         self._cube_pose = None
+
+        if self._tidy_active:
+            # Don't let one awkward cube stall the whole sweep - blacklist it
+            # and carry on with the rest, then report it at the end.
+            if self._target_id is not None:
+                self._tidy_failed.add(self._cell(self._cx, self._cy))
+                self._note(f'tidy: cube #{self._target_id} failed, skipping')
+            self._target_id = None
+            self._tidy_resume_at = (
+                self.get_clock().now().nanoseconds / 1e9 + TIDY_RESCAN_DELAY)
+            self._set_state(State.WAITING)
+            return
         # A deliberate stop already set its own result; only an actual failure
         # should be reported as one.
         if not self._last_result:
@@ -741,6 +1085,51 @@ class PickPlaceOrchestrator(Node):
             orientation=Quaternion(w=1.0)))
         obj.operation = CollisionObject.ADD
         return obj
+
+    def _scene_sync_obstacles(self) -> None:
+        """Publish every cube except the target as a collision object.
+
+        The target is handled separately (it gets attached to the tool), so it
+        is excluded here - leaving it in as a world obstacle would make its own
+        grasp descent unplannable.
+        """
+        scene = PlanningScene()
+        scene.is_diff = True
+
+        wanted = set()
+        for cid, (x, y) in self._cubes.items():
+            if cid == self._target_id:
+                continue
+            name = f'obstacle_cube_{cid}'
+            wanted.add(name)
+            obj = self._cube_collision_object(x, y)
+            obj.id = name
+            scene.world.collision_objects.append(obj)
+
+        for name in self._scene_obstacles - wanted:
+            gone = CollisionObject()
+            gone.header.frame_id = 'base_link'
+            gone.id = name
+            gone.operation = CollisionObject.REMOVE
+            scene.world.collision_objects.append(gone)
+
+        self._scene_obstacles = wanted
+        if scene.world.collision_objects:
+            self._apply_scene(scene, 'sync obstacles')
+
+    def _scene_clear_obstacles(self) -> None:
+        if not self._scene_obstacles:
+            return
+        scene = PlanningScene()
+        scene.is_diff = True
+        for name in self._scene_obstacles:
+            gone = CollisionObject()
+            gone.header.frame_id = 'base_link'
+            gone.id = name
+            gone.operation = CollisionObject.REMOVE
+            scene.world.collision_objects.append(gone)
+        self._scene_obstacles = set()
+        self._apply_scene(scene, 'clear obstacles')
 
     def _scene_add_cube(self, x: float, y: float) -> None:
         scene = PlanningScene()

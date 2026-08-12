@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  Disable FastDDS shared-memory transport, use UDP only.
+
+  The SHM transport leaves segments in /dev/shm when a process is killed rather
+  than shut down cleanly - which is exactly what stop_sim.sh does. The next
+  launch then fails with
+
+      RTPS_TRANSPORT_SHM Error: Failed init_port fastrtps_port9913:
+      open_and_lock_file failed
+
+  and the symptom is not an obvious DDS error: TF never propagates, so
+  base_link does not exist, perception cannot resolve the camera, and the arm
+  just sits at home. That cost two debugging sessions. Deleting the segments by
+  hand is unreliable because a surviving process recreates them immediately.
+
+  Loopback UDP is marginally slower than SHM and completely irrelevant at the
+  message rates here.
+-->
+<dds xmlns="http://www.eprosima.com">
+  <profiles>
+    <transport_descriptors>
+      <transport_descriptor>
+        <transport_id>udp_only</transport_id>
+        <type>UDPv4</type>
+      </transport_descriptor>
+    </transport_descriptors>
+
+    <participant profile_name="udp_only_participant" is_default_profile="true">
+      <rtps>
+        <userTransports>
+          <transport_id>udp_only</transport_id>
+        </userTransports>
+        <useBuiltinTransports>false</useBuiltinTransports>
+      </rtps>
+    </participant>
+  </profiles>
+</dds>

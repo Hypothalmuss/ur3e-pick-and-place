@@ -349,3 +349,73 @@ acceptance runs and both recovered to a clean 100% descent.
   and Retract buttons did exactly the same thing. Retract is now a real park
   pose (pan +90 deg, arm folded) clear of the workspace and the camera.
 - A deliberate stop reported `last_result: failed`; it now reports `stopped`.
+
+## 2026-08-12: zones, faster motion, multi-cube perception, tidy task
+
+Dashboard gained a `tidy` task: sweep every cube outside a red square on the
+ground into slots inside it. Zones, multi-cube tracking and a large speed-up
+came with it. Partly working - see "Not finished" at the end.
+
+### Speed: 5-10x
+`joint_limits.yaml` velocities were 0.35/0.5 rad/s and `CARRY_VEL_SCALE` 0.15,
+set for a friction grasp that could be shaken loose. The grasp is a rigid plugin
+attach now, so none of that applies. Now 1.8/2.5 rad/s and 0.6/0.4 scaling.
+Measured: home 30 s -> 1.5 s, retract 74 s -> 3.5 s, pick_place ~150 s -> 12 s.
+This was not cosmetic - cycles were slow enough that test harnesses timed out
+and commands came back "busy", which is what made a full run look broken.
+
+### Reach zones
+`zone_of()` classifies a table position as too_close (<0.24 m), perfect, or
+too_far (>0.50 m) by radius from base_link. Bounds come from measurement: every
+good pick has been between r=0.405 and r=0.474. Cubes spawn in the perfect
+annulus, picks outside it are refused, and the dashboard shows each cube's zone.
+
+### Drop zone and multi-cube
+Three cubes plus a red square outline (`drop_zone_*` in the world, centre
+(0.30, 0.22), 160 mm side, all four corners inside the perfect annulus).
+Perception detects all cubes and gives them ids that survive occlusion, and the
+orchestrator publishes every non-target cube to MoveIt as an obstacle - without
+that the arm planned straight through them and shoved two out of the workspace.
+
+### The camera was the limiting factor
+At 640x480 from 3 m, one pixel covered 5.7 mm of table and a cube spanned ~10 px,
+giving a ~10 mm position error. The open gripper leaves only 12.4 mm of clearance
+per side around a 60 mm cube, so that error was enough for a pad to clip a corner
+on the descent and drag the cube 57 mm instead of grasping it (caught by tracing
+Gazebo poses against the state machine, not guessable from the endpoints).
+1600x1200 brings the error to 3-6 mm.
+
+### Descent length, not descent retries
+The straight-line descent solved only ~50% in a scattered scene, and the retry
+made it *worse*: it raised the hover height, which lengthens the line, so every
+retry was harder than the last (99 re-approaches and 17 hard failures in one
+sweep). `APPROACH_HEIGHT` 0.30 -> 0.22 makes it a 70 mm line and retries now
+lower the hover. Result: 0 partial solves, 0 re-approaches, 0 failures.
+
+### Two loops that could not terminate
+- Blacklisting an unpickable cube by perception id is useless: ids are reassigned
+  when a cube is occluded or shoved, so each retry looked like a new cube. One
+  sweep reached id #59 and ran 10 minutes. Blacklist is keyed on a 50 mm position
+  grid now, plus a hard `TIDY_MAX_ATTEMPTS` cap.
+- A cycle that shoved a cube instead of carrying it still reported success, so
+  the sweep claimed 2 placed when 1 had arrived. `_verify_last_place()` now
+  checks the slot on the next scan and only counts confirmed deliveries.
+
+### Also
+- FastDDS forced to UDP-only (`config/fastdds_udp_only.xml`). Killed processes
+  leave locked /dev/shm segments and the *next* launch comes up with no TF at
+  all - the arm just sits at home. That cost two sessions to diagnose twice.
+- The orchestrator wipes move_group's planning scene at startup. move_group
+  outlives the node, so a restart inherited a cube still attached to tool0 and
+  every plan returned INVALID_MOTION_PLAN.
+- Orange HSV band narrowed to H 10-25 so the red drop-zone marker is not
+  detected as a cube.
+
+### Not finished
+The tidy sweep reliably delivers about 1 cube in 3. The descent and planning
+problems are fixed (0 failures), and reporting is now honest, but a pick still
+sometimes displaces its cube rather than grasping it - last run left one cube
+pushed to (0.165, 0.080), inside the too_close zone. Perception error (3-6 mm)
+is well inside the 12.4 mm clearance, so the remaining cause is not resolution;
+the next thing to instrument is where in APPROACH/GRASP the contact happens, per
+cube, with the Gazebo pose trace used above.

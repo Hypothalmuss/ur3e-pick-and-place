@@ -33,6 +33,11 @@ source /opt/ros/humble/setup.bash
 source /usr/share/gazebo/setup.sh 2>/dev/null
 source "$WS/install/setup.bash"
 export GAZEBO_PLUGIN_PATH="$WS/install/ur3e_gazebo_plugins/lib:${GAZEBO_PLUGIN_PATH:-}"
+# Force UDP-only DDS. Killed processes leave locked /dev/shm segments that
+# make the *next* launch come up with no TF at all - see the comment in
+# config/fastdds_udp_only.xml.
+export FASTRTPS_DEFAULT_PROFILES_FILE="$WS/src/ur3e_sim_bringup/config/fastdds_udp_only.xml"
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 cd "$WS"
 echo "[run_sim] using python: $(which python3)"
 

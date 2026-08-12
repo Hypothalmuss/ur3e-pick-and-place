@@ -72,8 +72,134 @@
       </link>
     </model>
 
-    <model name="target_cube">
-      <pose>0.4 0 0.03 0 0 0</pose>
+    <model name="cube_1">
+      <pose>0.42 -0.1 0.03 0 0 0</pose>
+      <link name="link">
+        <inertial>
+          <!-- 0.15 kg. A light cube gets flung by the pad contact - at 80 g it
+               was thrown ~260 mm on first touch and ended up under the robot,
+               out of reach. 0.15 kg with the kp=1e5 contact below keeps it
+               within ~50 mm. (0.5 kg measured calmer still, but 0.15 kg is the
+               chosen setting.) Inertia is m*(a^2+b^2)/12 for the 60 mm box and
+               must track the mass. -->
+          <mass>0.15</mass>
+          <inertia>
+            <ixx>9.0e-5</ixx><ixy>0</ixy><ixz>0</ixz>
+            <iyy>9.0e-5</iyy><iyz>0</iyz><izz>9.0e-5</izz>
+          </inertia>
+        </inertial>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.06 0.06 0.06</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>1 0.6 0 1</ambient>
+            <diffuse>1 0.6 0 1</diffuse>
+            <specular>0.1 0.06 0 1</specular>
+          </material>
+        </visual>
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>0.06 0.06 0.06</size>
+            </box>
+          </geometry>
+          <!-- Default collide_bitmask, so the cube collides with everything
+               including the gripper pads. It used to be 0x01 (ground only) so
+               the fingers could not touch it at all and a plugin moved it by
+               hand. High friction so the pads can actually hold it. -->
+          <surface>
+            <friction>
+              <ode>
+                <mu>3.0</mu>
+                <mu2>3.0</mu2>
+              </ode>
+            </friction>
+            <contact>
+              <ode>
+                <!-- kp 1e5, not 1e6. At 1e6 a single millimetre of pad
+                     penetration is 1000 N, which threw the cube ~26 cm on
+                     first contact. The finger pads in
+                     ur3e_with_effector.urdf.xacro must carry the same value -
+                     ODE combines the two surfaces, so a stiff pad against a
+                     soft cube is still a stiff contact. -->
+                <kp>1e5</kp>
+                <kd>1.0</kd>
+                <max_vel>0.01</max_vel>
+                <min_depth>0.0</min_depth>
+              </ode>
+            </contact>
+          </surface>
+        </collision>
+      </link>
+    </model>
+    <model name="cube_2">
+      <pose>0.4 0.12 0.03 0 0 0</pose>
+      <link name="link">
+        <inertial>
+          <!-- 0.15 kg. A light cube gets flung by the pad contact - at 80 g it
+               was thrown ~260 mm on first touch and ended up under the robot,
+               out of reach. 0.15 kg with the kp=1e5 contact below keeps it
+               within ~50 mm. (0.5 kg measured calmer still, but 0.15 kg is the
+               chosen setting.) Inertia is m*(a^2+b^2)/12 for the 60 mm box and
+               must track the mass. -->
+          <mass>0.15</mass>
+          <inertia>
+            <ixx>9.0e-5</ixx><ixy>0</ixy><ixz>0</ixz>
+            <iyy>9.0e-5</iyy><iyz>0</iyz><izz>9.0e-5</izz>
+          </inertia>
+        </inertial>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.06 0.06 0.06</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>1 0.6 0 1</ambient>
+            <diffuse>1 0.6 0 1</diffuse>
+            <specular>0.1 0.06 0 1</specular>
+          </material>
+        </visual>
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>0.06 0.06 0.06</size>
+            </box>
+          </geometry>
+          <!-- Default collide_bitmask, so the cube collides with everything
+               including the gripper pads. It used to be 0x01 (ground only) so
+               the fingers could not touch it at all and a plugin moved it by
+               hand. High friction so the pads can actually hold it. -->
+          <surface>
+            <friction>
+              <ode>
+                <mu>3.0</mu>
+                <mu2>3.0</mu2>
+              </ode>
+            </friction>
+            <contact>
+              <ode>
+                <!-- kp 1e5, not 1e6. At 1e6 a single millimetre of pad
+                     penetration is 1000 N, which threw the cube ~26 cm on
+                     first contact. The finger pads in
+                     ur3e_with_effector.urdf.xacro must carry the same value -
+                     ODE combines the two surfaces, so a stiff pad against a
+                     soft cube is still a stiff contact. -->
+                <kp>1e5</kp>
+                <kd>1.0</kd>
+                <max_vel>0.01</max_vel>
+                <min_depth>0.0</min_depth>
+              </ode>
+            </contact>
+          </surface>
+        </collision>
+      </link>
+    </model>
+    <model name="cube_3">
+      <pose>0.3 -0.28 0.03 0 0 0</pose>
       <link name="link">
         <inertial>
           <!-- 0.15 kg. A light cube gets flung by the pad contact - at 80 g it
@@ -136,6 +262,59 @@
       </link>
     </model>
 
+    <model name="drop_zone_0">
+      <static>true</static>
+      <pose>0.3 0.14 0.001 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry><box><size>0.168 0.008 0.002</size></box></geometry>
+          <material>
+            <ambient>0.8 0 0 1</ambient>
+            <diffuse>0.9 0.05 0.05 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="drop_zone_1">
+      <static>true</static>
+      <pose>0.3 0.3 0.001 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry><box><size>0.168 0.008 0.002</size></box></geometry>
+          <material>
+            <ambient>0.8 0 0 1</ambient>
+            <diffuse>0.9 0.05 0.05 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="drop_zone_2">
+      <static>true</static>
+      <pose>0.21999999999999997 0.22 0.001 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry><box><size>0.008 0.168 0.002</size></box></geometry>
+          <material>
+            <ambient>0.8 0 0 1</ambient>
+            <diffuse>0.9 0.05 0.05 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="drop_zone_3">
+      <static>true</static>
+      <pose>0.38 0.22 0.001 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry><box><size>0.008 0.168 0.002</size></box></geometry>
+          <material>
+            <ambient>0.8 0 0 1</ambient>
+            <diffuse>0.9 0.05 0.05 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
     <model name="camera_model">
       <static>true</static>
       <pose>0.15 0 3.0 0 1.5708 0</pose>
@@ -145,9 +324,17 @@
           <visualize>true</visualize>
           <camera>
             <horizontal_fov>1.4</horizontal_fov>
+            <!-- 1600x1200, not 640x480. At 3 m with a 1.4 rad FOV, a 640-wide
+                 image puts one pixel over ~5.7 mm of table and a 60 mm cube
+                 spans only ~10 px, so blob-centroid quantisation alone gave a
+                 ~10 mm position error. The open gripper leaves 12.4 mm of
+                 clearance per side around the cube, so that error was enough
+                 for a pad to clip a corner on the way down and drag the cube
+                 ~57 mm instead of grasping it. 2.5x the resolution puts the
+                 error well inside the clearance. -->
             <image>
-              <width>640</width>
-              <height>480</height>
+              <width>1600</width>
+              <height>1200</height>
               <format>B8G8R8</format>
             </image>
             <clip>
