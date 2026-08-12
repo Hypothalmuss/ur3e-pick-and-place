@@ -519,3 +519,25 @@ dashboard; the task returns immediately rather than occupying the state machine.
 Verified: 8 markers on the topic (3 zones, drop zone, 4 slots); a spawned cube
 appears in Gazebo as cube_spawned_1 and is detected as a new tracked id in the
 perfect zone.
+
+## 2026-08-12: full system acceptance 32/32
+
+`full_system_test.py` exercises the whole cell - startup, rejections, simple
+motions, spawn-then-pick-that-cube, estop mid-motion, reset, pick_to, tidy-all -
+and checks every physical claim against /gazebo/model_states rather than
+perception, since perception is one of the things under test.
+
+The last two failures were both the IK reconfiguration guard. MAX_IK_JOINT_JUMP
+was rejecting *legitimate* moves: with joints capped at +/-pi by
+joint_limits.yaml, travelling from +3.0 to -3.0 is a real 6.0 rad journey
+because the planner cannot wrap through pi. The guard dated from when IK
+solutions were streamed straight to the trajectory controller as a single point
+with no path checking, where a large reconfiguration genuinely could drive the
+arm through itself. That path no longer exists - solutions are planned through
+MoveIt, which collision-checks them and enforces the joint limits - so the guard
+was pure downside. Raised to 6.5 rad, and the rejection message now names the
+offending joint and its current/target angles.
+
+Result: 32/32, including pick_to landing a cube within 0 mm of the requested
+point and tidy putting 4/4 cubes (three placed plus one spawned mid-run) inside
+the red square.

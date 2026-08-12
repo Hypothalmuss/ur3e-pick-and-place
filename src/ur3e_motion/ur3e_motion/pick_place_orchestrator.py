@@ -1756,9 +1756,15 @@ class PickPlaceOrchestrator(Node):
 
         jump = self._max_joint_displacement(joints)
         if jump > MAX_IK_JOINT_JUMP:
+            worst = max(
+                ARM_JOINTS,
+                key=lambda n: abs(dict(zip(ARM_JOINTS, joints))[n]
+                                  - self._current_joint_positions.get(n, 0.0)))
             self.get_logger().error(
                 f'rejecting IK solution: it reconfigures the arm by {jump:.2f} rad '
-                f'(limit {MAX_IK_JOINT_JUMP})')
+                f'(limit {MAX_IK_JOINT_JUMP}); worst joint {worst} '
+                f'{self._current_joint_positions.get(worst, 0.0):.2f} -> '
+                f'{dict(zip(ARM_JOINTS, joints))[worst]:.2f}')
             callback(False)
             return
 
