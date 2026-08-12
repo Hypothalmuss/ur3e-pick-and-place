@@ -1,5 +1,12 @@
 // Robust grasp plugin for a parallel gripper in Gazebo Classic.
 //
+// Manages EVERY graspable object in the world, not one. The original version
+// bound to the first non-static model it found and kept it forever, which was
+// invisible while the world held a single cube: with three, only that one was
+// kinematic and grabbable and the other two were ordinary dynamic bodies the
+// gripper could merely shove. The symptom was a tidy sweep that reliably
+// delivered exactly one cube and pushed the rest out of the workspace.
+//
 // Gazebo Classic contact between a light box and a moving gripper is unstable
 // (the box gets knocked away or flung by stiff contacts). To make pick-and-place
 // reliable, the target object is held KINEMATIC and managed by this plugin:
@@ -21,6 +28,7 @@
 #include <functional>
 #include <string>
 #include <algorithm>
+#include <vector>
 
 #include <gazebo/common/Plugin.hh>
 #include <gazebo/gazebo.hh>
@@ -66,14 +74,18 @@ public:
   }
 
   void OnUpdate() {
-    // Lazily bind the graspable object once it exists in the world, and make it
-    // kinematic so nothing can knock it around.
-    if (!obj_link_) { FindObject(); if (!obj_link_) return; }
+    // Objects can be spawned after the plugin loads, so keep looking until the
+    // world stops growing rather than binding once.
+    if (objs_.size() != graspable_count()) FindObjects();
+    if (objs_.empty()) return;
 
-    if (carrying_) {
-      obj_link_->SetWorldPose(ignition::math::Pose3d(GraspPoint(), carry_rot_));
-    } else {
-      obj_link_->SetWorldPose(rest_pose_);   // hold in place; immune to bumps
+    for (size_t i = 0; i < objs_.size(); ++i) {
+      if (carrying_ && i == carried_) {
+        objs_[i].link->SetWorldPose(
+            ignition::math::Pose3d(GraspPoint(), carry_rot_));
+      } else {
+        objs_[i].link->SetWorldPose(objs_[i].rest);  // immune to bumps
+      }
     }
 
     common::Time now = world_->SimTime();
@@ -82,18 +94,30 @@ public:
 
     const double closure = joint_->Position(0);
     if (!carrying_ && closure > attach_thresh_) {
+      // Take the NEAREST object inside the radius. Picking the first match
+      // would grab whichever happened to be listed first, which is how the
+      // single-object version behaved and why it only ever worked for one cube.
       const ignition::math::Vector3d gp = GraspPoint();
-      if ((obj_link_->WorldPose().Pos() - gp).Length() < grasp_radius_) {
-        carry_rot_ = obj_link_->WorldPose().Rot();
+      size_t best = 0;
+      double best_d = grasp_radius_;
+      bool found = false;
+      for (size_t i = 0; i < objs_.size(); ++i) {
+        const double d = (objs_[i].link->WorldPose().Pos() - gp).Length();
+        if (d < best_d) { best_d = d; best = i; found = true; }
+      }
+      if (found) {
+        carried_ = best;
+        carry_rot_ = objs_[best].link->WorldPose().Rot();
         carrying_ = true;
-        gzmsg << "[gripper_grasp] grasped '" << obj_model_->GetName() << "'\n";
+        gzmsg << "[gripper_grasp] grasped '" << objs_[best].model->GetName()
+              << "' at " << best_d << " m\n";
       }
     } else if (carrying_ && closure < detach_thresh_) {
-      ignition::math::Vector3d p = obj_link_->WorldPose().Pos();
-      rest_pose_ = ignition::math::Pose3d(
+      ignition::math::Vector3d p = objs_[carried_].link->WorldPose().Pos();
+      objs_[carried_].rest = ignition::math::Pose3d(
           ignition::math::Vector3d(p.X(), p.Y(), rest_z_), carry_rot_);
       carrying_ = false;
-      gzmsg << "[gripper_grasp] placed '" << obj_model_->GetName()
+      gzmsg << "[gripper_grasp] placed '" << objs_[carried_].model->GetName()
             << "' at (" << p.X() << ", " << p.Y() << ")\n";
     }
   }
@@ -107,19 +131,31 @@ private:
     return s->HasElement(k) ? s->Get<double>(k) : d;
   }
 
-  void FindObject() {
+  bool graspable(const physics::ModelPtr &m) const {
+    return m && m != model_ && !m->IsStatic() && m->GetName() != "ground_plane";
+  }
+
+  size_t graspable_count() const {
+    size_t n = 0;
+    for (const auto &m : world_->Models()) if (graspable(m)) ++n;
+    return n;
+  }
+
+  void FindObjects() {
     for (const auto &m : world_->Models()) {
-      if (!m || m == model_ || m->IsStatic()) continue;
-      if (m->GetName() == "ground_plane") continue;
+      if (!graspable(m)) continue;
+      bool known = false;
+      for (const auto &o : objs_) if (o.model == m) { known = true; break; }
+      if (known) continue;
+
       physics::LinkPtr l = m->GetLink();
       if (!l) { for (const auto &x : m->GetLinks()) { l = x; break; } }
       if (!l) continue;
-      obj_model_ = m;
-      obj_link_ = l;
-      obj_link_->SetKinematic(true);
-      rest_pose_ = obj_link_->WorldPose();
-      gzmsg << "[gripper_grasp] managing object '" << m->GetName() << "'\n";
-      return;
+
+      l->SetKinematic(true);
+      objs_.push_back({m, l, l->WorldPose()});
+      gzmsg << "[gripper_grasp] managing object '" << m->GetName()
+            << "' (" << objs_.size() << " total)\n";
     }
   }
 
@@ -133,12 +169,19 @@ private:
         ignition::math::Vector3d(0, 0, palm_offset_z_));
   }
 
-  physics::ModelPtr model_, obj_model_;
+  struct Managed {
+    physics::ModelPtr model;
+    physics::LinkPtr link;
+    ignition::math::Pose3d rest;
+  };
+
+  physics::ModelPtr model_;
   physics::WorldPtr world_;
   physics::JointPtr joint_;
-  physics::LinkPtr palm_, left_finger_, right_finger_, obj_link_;
+  physics::LinkPtr palm_, left_finger_, right_finger_;
+  std::vector<Managed> objs_;
+  size_t carried_{0};
   ignition::math::Quaterniond carry_rot_;
-  ignition::math::Pose3d rest_pose_;
   event::ConnectionPtr update_;
   std::string joint_name_, palm_name_, left_finger_name_, right_finger_name_;
   double attach_thresh_{0.30}, detach_thresh_{0.15}, grasp_radius_{0.15};

@@ -419,3 +419,29 @@ pushed to (0.165, 0.080), inside the too_close zone. Perception error (3-6 mm)
 is well inside the 12.4 mm clearance, so the remaining cause is not resolution;
 the next thing to instrument is where in APPROACH/GRASP the contact happens, per
 cube, with the Gazebo pose trace used above.
+
+### Tidy working: 3/3 (update to the section above)
+Three more faults, all found by asking "is use_grasp_fix actually doing what we
+think" rather than tuning further:
+
+1. **The grasp plugin managed exactly one object.** `FindObject()` took the
+   first non-static model in the world and bound to it forever, making only that
+   cube kinematic and grabbable. Invisible with a single cube; with three, the
+   other two were ordinary dynamic bodies the gripper could only shove. The
+   signature was unmistakable in hindsight: cube_1 was the one that always
+   worked. It now manages every graspable model and attaches the *nearest* one
+   inside `grasp_radius`.
+2. **The end-of-cycle pose moved across the workspace.** `_finish` parked at
+   `RETRACT_JOINTS`, which was byte-identical to `HOME_JOINTS` until Retract
+   became a real park pose (pan +90 deg). After that, every approach following a
+   place needed a ~2.1 rad reconfiguration and was rejected by the IK jump
+   limit, so every pick after the first failed. Parks at HOME now.
+3. **compute_ik returns wrapped solutions.** It works from the URDF's +/-2*pi
+   limits, not the +/-pi in joint_limits.yaml, so it returned a pose a whole
+   revolution out - physically identical, but the jump check saw 6.07 rad and
+   refused it. IK solutions are unwrapped to the equivalent nearest the current
+   joint angle before the check.
+
+Verified against Gazebo ground truth, not perception: cube_1 carried 400 mm,
+cube_2 78 mm, cube_3 457 mm, 3/3 inside the square in 38 s, with 0 ERROR states,
+0 IK rejections and 0 descent retries.

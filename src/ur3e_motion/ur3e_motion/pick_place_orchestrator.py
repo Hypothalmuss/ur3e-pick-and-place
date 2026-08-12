@@ -972,7 +972,13 @@ class PickPlaceOrchestrator(Node):
         self._scene_add_cube(self._place_x, self._place_y)
         self._set_state(State.DONE)
         self.get_logger().info('Pick-and-place complete')
-        self._move_joints(RETRACT_JOINTS, self._reset, duration_sec=None)
+        # HOME, not RETRACT. These two were the same six values until Retract
+        # became a real park pose (pan +90 deg), and that silently moved the
+        # end-of-cycle pose right across the workspace: the next approach then
+        # needed a ~2.1 rad reconfiguration and was rejected by the IK jump
+        # limit, so every pick after the first failed. HOME sits central and
+        # close to everything. Retract stays available as its own task.
+        self._move_joints(HOME_JOINTS, self._reset, duration_sec=None)
 
     def _reset(self, success: bool = True) -> None:
         self._cycle_active = False
@@ -1446,6 +1452,14 @@ class PickPlaceOrchestrator(Node):
             callback(False)
             return
 
+        # compute_ik works from the URDF's +/-2*pi limits, not the +/-pi in
+        # joint_limits.yaml, so it happily returns a solution a whole revolution
+        # away from the current state. That is the same physical pose, but the
+        # jump check saw it as a 6.07 rad reconfiguration and rejected the pick.
+        # Unwrap each joint to its equivalent nearest the current angle first.
+        joints = [self._nearest_equivalent(name, q)
+                  for name, q in zip(ARM_JOINTS, joints)]
+
         jump = self._max_joint_displacement(joints)
         if jump > MAX_IK_JOINT_JUMP:
             self.get_logger().error(
@@ -1460,6 +1474,25 @@ class PickPlaceOrchestrator(Node):
         self.get_logger().info(
             f'IK fallback succeeded ({jump:.2f} rad move), planning to it')
         self._move_joints(joints, callback)
+
+    def _nearest_equivalent(self, name: str, q: float) -> float:
+        """Same angle, expressed nearest the joint's current value.
+
+        Only shifts by whole revolutions, so the arm's physical pose is
+        unchanged; it just stops a wrapped IK solution from looking like a
+        full-turn reconfiguration. Results outside +/-pi are left alone -
+        joint_limits.yaml keeps the planner inside that band, and quietly
+        handing it something outside would only fail later.
+        """
+        cur = self._current_joint_positions.get(name)
+        if cur is None:
+            return q
+        best = q
+        while best - cur > math.pi:
+            best -= 2.0 * math.pi
+        while cur - best > math.pi:
+            best += 2.0 * math.pi
+        return best if abs(best) <= math.pi else q
 
     def _max_joint_displacement(self, target_joints: list[float]) -> float:
         if not self._joint_positions_known:
