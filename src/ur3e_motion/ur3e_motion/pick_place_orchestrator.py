@@ -367,6 +367,10 @@ class PickPlaceOrchestrator(Node):
         # move_group outlives this node, so its scene has to be wiped once at
         # startup before anything is planned - see the STARTUP branch of _tick.
         self._scene_cleared = False
+        self._unwinding = False
+        # Skip the HOME trip between picks of a multi-cube sweep.
+        self.declare_parameter('direct_transfer', True)
+        self._direct_transfer = self.get_parameter('direct_transfer').value
         self._scene_obstacles: set = set()
         self._stop_requested = False
         self._estopped = False
@@ -1052,6 +1056,19 @@ class PickPlaceOrchestrator(Node):
             self._set_state(State.ERROR)
             return
 
+        # A joint wound past +/-pi makes MoveIt refuse to plan from the
+        # current state, and skipping the HOME trip removes what used to
+        # unwind it as a side effect. Check here instead, so the guarantee
+        # belongs to the approach rather than to a pose we may not visit.
+        if not self._unwinding and any(
+                abs(self._current_joint_positions.get(n, 0.0)) > math.pi
+                for n in ARM_JOINTS):
+            self._unwinding = True
+            self._note('unwinding joints before approach')
+            self._move_joints(HOME_JOINTS, self._approach)
+            return
+        self._unwinding = False
+
         # Every other cube is an obstacle. Without this MoveIt only knows about
         # the one being picked and plans straight through the rest - in a
         # three-cube sweep the arm shoved two of them 130-160 mm out of the
@@ -1264,6 +1281,18 @@ class PickPlaceOrchestrator(Node):
         # needed a ~2.1 rad reconfiguration and was rejected by the IK jump
         # limit, so every pick after the first failed. HOME sits central and
         # close to everything. Retract stays available as its own task.
+        #
+        # Mid-sweep the HOME trip is skipped: with more cubes to fetch it is
+        # ~1.5 s of travel to a pose we immediately leave again. It is kept
+        # for the last cube, for single picks, and for every failure path,
+        # because HOME is also what clears the overhead camera's view and
+        # what normally unwinds the joints - _approach checks the winding
+        # itself now so skipping this cannot reintroduce the deadlock.
+        if (self._direct_transfer and self._tidy_active
+                and len(self._pickable_cubes()) > 1):
+            self._note('direct transfer: skipping HOME, more cubes to fetch')
+            self._reset(True)
+            return
         self._move_joints(HOME_JOINTS, self._reset, duration_sec=None)
 
     def _reset(self, success: bool = True) -> None:

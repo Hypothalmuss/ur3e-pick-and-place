@@ -591,3 +591,25 @@ Three consecutive full runs afterwards: 32/32, 32/32, 32/32, wrist_3 ending at
 -0.01 / -0.03 / 0.02, 0 ERROR states in all three. The third logged one unwind,
 so the safety net is demonstrably firing and recovering rather than the problem
 merely not recurring.
+
+## 2026-08-12: direct transfer between picks - implemented, NOT yet effective
+
+Skipping the HOME trip between picks of a multi-cube sweep is in
+`_finish` behind a `direct_transfer` parameter (default true), guarded by
+`_tidy_active` and more than one cube still to fetch.
+
+It does not fire. Three full runs logged `skips=0`. The branch is present in the
+built copy and the parameter is declared, so the condition
+`len(self._pickable_cubes()) > 1` is simply not true at `_finish` time and I have
+not yet established why - `self._cubes` is the pre-cycle snapshot there, so it
+should still list every cube outside the drop zone. Needs one instrumented run
+logging the pickable count at `_finish` to settle it.
+
+The half of the change that *is* working is the winding guarantee moving to the
+approach. It used to be a side effect of visiting HOME; `_approach` now checks
+for an out-of-range joint itself and unwinds first. That fired in two of the
+three runs, so the property no longer depends on a pose the sweep may skip -
+which is what made the optimisation safe to attempt at all.
+
+No regression: runs 2 and 3 were 32/32; run 1 was 30/32 with the same
+intermittent approach-planning failures seen before this change.
