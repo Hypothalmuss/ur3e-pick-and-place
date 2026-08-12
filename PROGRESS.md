@@ -613,3 +613,32 @@ which is what made the optimisation safe to attempt at all.
 
 No regression: runs 2 and 3 were 32/32; run 1 was 30/32 with the same
 intermittent approach-planning failures seen before this change.
+
+## 2026-08-12: "pick all" stacked every cube in slot 1
+
+Reported from use: `tidy` put all cubes on top of each other at slot 1, while
+picking them one at a time with `pick_selected` spread them correctly. Measured
+from Gazebo: two cubes at 0 mm separation.
+
+`_free_slot()` judged occupancy purely from perception, and at HOME the arm
+reaches out over the workspace and can shadow the drop zone from the overhead
+camera. A cube just delivered was therefore invisible when the next slot was
+chosen, so slot 1 read as free every time. One-at-a-time picking hid it because
+the arm ends up elsewhere between commands and the view is clear.
+
+The sweep now reserves a slot when it commits to one, independent of whether it
+can see anything. First attempt at that still stacked, because the reservation
+was released whenever `_verify_last_place()` reported nothing had arrived - and
+that verdict comes from the same blind perception, so it fired exactly when the
+zone was occluded and handed the next cube the same slot. The reservation now
+survives a failed verify: losing a slot to a false negative is much cheaper than
+putting two cubes in one place.
+
+Three runs after the fix: 1/1, 3/3 and 3/3 cubes placed, all in distinct slots,
+closest pair 89 mm against a 60 mm cube on a 90 mm pitch. (The 1/1 run is the
+separate intermittent approach-planning failure, not stacking.)
+
+### The suite gave a false green
+`full_system_test.py` checked that cubes ended up *inside* the square but never
+that they were in *different* slots, so three cubes stacked at slot 1 passed
+32/32. A closest-pair check is now part of the suite.

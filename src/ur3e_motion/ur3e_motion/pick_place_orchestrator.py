@@ -331,6 +331,7 @@ class PickPlaceOrchestrator(Node):
         self._tidy_done = 0
         self._tidy_failed: set = set()
         self._tidy_attempts = 0
+        self._used_slots: list = []
         self._last_slot = None
         self._last_pick_cell = None
         self._tidy_resume_at = 0.0
@@ -788,6 +789,7 @@ class PickPlaceOrchestrator(Node):
             self._tidy_done = 0
             self._tidy_failed.clear()
             self._tidy_attempts = 0
+            self._used_slots.clear()
             self._tidy_step()
         else:  # pick_place / pick_to
             if task == 'pick_to':
@@ -843,6 +845,7 @@ class PickPlaceOrchestrator(Node):
             return
 
         self._place_x, self._place_y = slot
+        self._used_slots.append(slot)   # reserved, seen or not
         self._last_slot = slot
         self._last_pick_cell = self._cell(self._cx, self._cy)
         self._place_retries = 0
@@ -869,6 +872,13 @@ class PickPlaceOrchestrator(Node):
         else:
             if self._last_pick_cell is not None:
                 self._tidy_failed.add(self._last_pick_cell)
+            # The reservation deliberately survives. Whether the cube landed
+            # is judged from perception, and the drop zone is exactly what
+            # the arm can shadow - so a 'nothing arrived' verdict is as
+            # likely to mean 'could not see it' as 'it is not there'.
+            # Releasing the slot on that verdict sent the next cube to the
+            # same spot and stacked them at 0 mm separation. Losing a slot
+            # to a false negative is the cheaper mistake.
             self._note('tidy: cube was displaced, not carried - skipping it')
         self._last_slot = None
         self._last_pick_cell = None
@@ -934,8 +944,19 @@ class PickPlaceOrchestrator(Node):
             key=lambda c: math.hypot(c[1], c[2]))
 
     def _free_slot(self):
-        """First drop slot with no cube sitting in it."""
+        """First drop slot with nothing in it and nothing already sent to it.
+
+        Occupancy cannot be judged from perception alone. At HOME the arm
+        reaches out over the workspace and can shadow the drop zone from the
+        overhead camera, so a cube just placed there may be invisible when
+        the next slot is chosen - every cube then targets slot 1 and they
+        stack. Picking cubes one at a time hid it, because the arm ends up
+        elsewhere between commands and the view is clear. The sweep knows
+        where it has already delivered, so it tracks that itself.
+        """
         for sx, sy in DROP_SLOTS:
+            if (sx, sy) in self._used_slots:
+                continue
             if not any(math.hypot(x - sx, y - sy) < SLOT_OCCUPIED_RADIUS
                        for x, y in self._cubes.values()):
                 return sx, sy
