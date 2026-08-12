@@ -256,7 +256,7 @@ HOVER_MIN = 0.18          # never drop the pads closer than ~60 mm above the cub
 # behind the robot legitimately costs ~2.6 rad. The guard exists to catch
 # branch flips, not to cap travel: whatever survives is still planned through
 # MoveIt with full collision checking rather than commanded directly.
-MAX_IK_JOINT_JUMP = 3.0  # rad
+MAX_IK_JOINT_JUMP = 6.5  # rad; see _nearest_equivalent
 
 # These were 0.15/0.10 because the cube was held by friction and a brisk swing
 # shed it. The grasp is a rigid plugin attach now (use_grasp_fix), so the carry
@@ -1575,6 +1575,10 @@ class PickPlaceOrchestrator(Node):
                      callback, duration_sec: float | None = None) -> None:
         # Abandoned tasks must not keep driving the arm; see _guard.
         callback = self._guard(callback)
+        # Targets are always expressed inside [-pi, pi] so a joint that has
+        # wound past a full turn gets commanded back into the planner's
+        # range rather than being left there.
+        joints = [math.atan2(math.sin(q), math.cos(q)) for q in joints]
         if not self._moveit_client.wait_for_server(timeout_sec=1.0):
             self.get_logger().warn('MoveIt2 not available, using direct joint control')
             self._send_joint_goal(joints, duration_sec, callback)
@@ -1784,15 +1788,14 @@ class PickPlaceOrchestrator(Node):
         joint_limits.yaml keeps the planner inside that band, and quietly
         handing it something outside would only fail later.
         """
-        cur = self._current_joint_positions.get(name)
-        if cur is None:
-            return q
-        best = q
-        while best - cur > math.pi:
-            best -= 2.0 * math.pi
-        while cur - best > math.pi:
-            best += 2.0 * math.pi
-        return best if abs(best) <= math.pi else q
+        # Always land inside [-pi, pi]. Returning an out-of-range value
+        # instead (which the previous version did) is how wrist_3 wound up
+        # at -8.3 rad: compute_ik works from the URDF's +/-2*pi limits, the
+        # solution was executed as given, and each cycle added another turn.
+        # Once outside the +/-pi in joint_limits.yaml, MoveIt cannot plan
+        # from that state at all and every later motion fails with
+        # INVALID_MOTION_PLAN.
+        return math.atan2(math.sin(q), math.cos(q))
 
     def _max_joint_displacement(self, target_joints: list[float]) -> float:
         if not self._joint_positions_known:

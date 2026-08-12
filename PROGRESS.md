@@ -541,3 +541,30 @@ offending joint and its current/target angles.
 Result: 32/32, including pick_to landing a cube within 0 mm of the requested
 point and tidy putting 4/4 cubes (three placed plus one spawned mid-run) inside
 the red square.
+
+### The real cause: wrist_3 was winding up
+The 32/32 above was luck - the next run was 30/32 again. The detailed rejection
+message (which now names the offending joint) gave it away:
+
+    worst joint wrist_3_joint  -8.32 -> -2.10
+
+wrist_3 was at **-8.32 rad**, two and a half turns outside the +/-pi that
+joint_limits.yaml allows. compute_ik works from the URDF's +/-2*pi limits, the
+solution was executed exactly as returned, and every cycle added another
+fraction of a turn. Once the joint is outside the planner's range MoveIt cannot
+plan *from* that state at all, which is where the INVALID_MOTION_PLAN failures
+came from too - and the arm looked fine, because -6.28 rad is physically the
+same orientation as 0.
+
+`_nearest_equivalent` had a `return best if abs(best) <= math.pi else q` escape
+hatch that handed the raw out-of-range value straight back; that was the leak.
+It now always returns `atan2(sin q, cos q)`, and `_move_joints` normalises its
+targets the same way so a wound joint is commanded back into range instead of
+being left there. MAX_IK_JOINT_JUMP raised to 6.5 so the unwinding move itself
+is permitted.
+
+(The earlier attempt to raise that constant silently failed to apply - the log
+still read "limit 3.0" - which is why the first fix appeared not to work.)
+
+Clean run afterwards: 32/32, wrist_3 back at -0.01, and 0 ERROR states and 0 IK
+rejections underneath, where the lucky pass had 1 of each.
