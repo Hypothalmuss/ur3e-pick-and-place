@@ -445,3 +445,22 @@ think" rather than tuning further:
 Verified against Gazebo ground truth, not perception: cube_1 carried 400 mm,
 cube_2 78 mm, cube_3 457 mm, 3/3 inside the square in 38 s, with 0 ERROR states,
 0 IK rejections and 0 descent retries.
+
+### Tidy: works, but only about half of picks plan successfully
+Across four runs after the grasp-plugin fix: 3/3, 2/3, 1/3, 3/3. The failures are
+now *clean* - a pick that fails leaves its cube untouched at its spawn position
+and the sweep skips it, rather than shoving it out of the workspace. That is the
+qualitative change from the plugin fix; the cubes are kinematic and pinned, so
+nothing can knock them any more.
+
+What still fails is planning the APPROACH to certain cube positions:
+`MoveIt2 failed: error_code=-2` followed by an IK solution rejected as too large
+a reconfiguration (2.6 rad, and some above the raised 3.0 limit). The IK seed is
+now complete (arm + gripper joint, is_diff=False) and wrapped solutions are
+unwrapped, which removed one whole class of these, but a genuine branch flip
+remains for cubes behind the robot.
+
+Next thing to try: constrain the approach plan rather than filter its result -
+either a joint-space goal derived from a known-good seed per workspace sector,
+or set the OMPL planner's start state explicitly and let it plan the whole
+transfer instead of pose-goal-then-IK-fallback.

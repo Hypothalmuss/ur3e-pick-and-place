@@ -229,7 +229,12 @@ HOVER_MIN = 0.18          # never drop the pads closer than ~60 mm above the cub
 # Largest joint displacement an IK solution may ask for before it is treated as
 # a reconfiguration rather than a move. Anything bigger is the arm flipping to a
 # different branch, which is what produced the wild swings.
-MAX_IK_JOINT_JUMP = 2.0  # rad
+# 3.0, not 2.0. Wrapped solutions are unwrapped before this check now, so
+# what is left is a genuine reach across the workspace - and reaching a cube
+# behind the robot legitimately costs ~2.6 rad. The guard exists to catch
+# branch flips, not to cap travel: whatever survives is still planned through
+# MoveIt with full collision checking rather than commanded directly.
+MAX_IK_JOINT_JUMP = 3.0  # rad
 
 # These were 0.15/0.10 because the cube was held by friction and a brisk swing
 # shed it. The grasp is a rigid plugin attach now (use_grasp_fix), so the carry
@@ -1420,10 +1425,15 @@ class PickPlaceOrchestrator(Node):
         # Seed from where the arm actually is. KDL is a random-restart solver;
         # without a seed it returns an arbitrary branch, which is what made the
         # arm reconfigure violently between two nearby poses.
+        # Include the gripper joint too: MoveIt can disregard a robot_state
+        # that does not describe the whole model, and a disregarded seed is
+        # the same as no seed at all.
         if self._joint_positions_known:
-            req.ik_request.robot_state.joint_state.name = list(ARM_JOINTS)
+            seed = list(ARM_JOINTS) + [GRIPPER_JOINT]
+            req.ik_request.robot_state.joint_state.name = seed
             req.ik_request.robot_state.joint_state.position = [
-                self._current_joint_positions.get(n, 0.0) for n in ARM_JOINTS]
+                self._current_joint_positions.get(n, 0.0) for n in seed]
+            req.ik_request.robot_state.is_diff = False
 
         future = self._ik_client.call_async(req)
         future.add_done_callback(lambda f: self._ik_response_cb(f, callback))
