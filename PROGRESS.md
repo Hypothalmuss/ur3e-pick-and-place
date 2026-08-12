@@ -464,3 +464,39 @@ Next thing to try: constrain the approach plan rather than filter its result -
 either a joint-space goal derived from a known-good seed per workspace sector,
 or set the OMPL planner's start state explicitly and let it plan the whole
 transfer instead of pose-goal-then-IK-fallback.
+
+## 2026-08-12 (later): emergency stop, reset, and cube selection
+
+### Emergency stop is a halt, not a recovery
+`stop` was the only interrupt and it is not an emergency control: it drops into
+ERROR recovery, which *opens the gripper and drives the arm back to HOME*. It
+makes the robot move more, and drops whatever it is holding.
+
+`estop` halts where it stands, latches, and refuses every command except
+`reset`. `reset` clears the latch, wipes the planning scene and homes the arm
+ready for the next command. Both are on the dashboard; estop is always accepted,
+even mid-cycle and even while already latched.
+
+Cancelling the action goals turned out to be necessary but nowhere near
+sufficient - measured 2.54 rad of further travel after the cancel, because once
+a trajectory is with joint_trajectory_controller it keeps executing. The halt
+also publishes a single-point JointTrajectory at the current joint positions,
+which supersedes the running goal. Measured after that change: 0.0001 rad of
+drift over the 4 s following the stop, against 0.155 rad of deceleration during
+the stop itself.
+
+### Pick only the cubes you choose
+`RunTask` gains `int32[] ids` and a `pick_selected` task, which runs the tidy
+sweep restricted to those perception ids. The dashboard lists every detected
+cube with its zone and a checkbox; cubes outside the perfect zone or already in
+the drop zone are shown but not selectable. Ticks survive the 400 ms poll, which
+they would not if the list were simply re-rendered.
+
+Verified: selecting one of three cubes moved that cube into the square and left
+the other two untouched at their spawn positions; an empty selection and an
+unknown id are both refused.
+
+### Known cosmetic issue
+A `pick_selected` run that succeeds can still report "1 placed, 1 skipped" - the
+skip count picks up an entry it should not when the selection is satisfied. The
+physical outcome is correct; only the summary line is wrong.

@@ -1,10 +1,20 @@
 # Dashboard -> orchestrator task command.
-# task is one of: home, retract, pick_place, pick_to, open_gripper,
-#                 close_gripper, stop
-# x/y are only read by pick_to and give the place target in base_link metres.
+#
+# task is one of:
+#   home, retract, pick_place, pick_to, pick_selected, tidy,
+#   open_gripper, close_gripper, stop, estop, reset
+#
+# x/y      place target in base_link metres; read by pick_to only.
+# ids      perception ids to act on; read by pick_selected only. Empty means
+#          "every cube", which is what tidy does.
+#
+# stop vs estop: stop ends the cycle tidily (reopen the gripper, return HOME).
+# estop halts the arm where it stands and latches - nothing but reset is
+# accepted afterwards.
 string task
 float64 x
 float64 y
+int32[] ids
 ---
 bool accepted
 string message

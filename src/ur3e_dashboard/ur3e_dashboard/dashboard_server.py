@@ -98,7 +98,8 @@ class DashboardServer(Node):
         status['status_age'] = round(age, 2) if age is not None else None
         return status
 
-    def run_task(self, task: str, x: float, y: float) -> dict:
+    def run_task(self, task: str, x: float, y: float,
+                 ids: list | None = None) -> dict:
         if not self._task_client.wait_for_service(timeout_sec=2.0):
             return {'accepted': False,
                     'message': 'orchestrator not running (/ur3e/run_task absent)'}
@@ -106,6 +107,7 @@ class DashboardServer(Node):
         req.task = task
         req.x = float(x)
         req.y = float(y)
+        req.ids = [int(i) for i in (ids or [])]
         future = self._task_client.call_async(req)
         # The node spins on a MultiThreadedExecutor and this runs on an HTTP
         # worker thread, so waiting on the future here does not deadlock.
@@ -173,7 +175,14 @@ def _make_handler(node: DashboardServer):
                 self._json(400, {'accepted': False,
                                  'message': 'x and y must be numbers'})
                 return
-            self._json(200, node.run_task(task, x, y))
+            ids = body.get('ids') or []
+            try:
+                ids = [int(i) for i in ids]
+            except (TypeError, ValueError):
+                self._json(400, {'accepted': False,
+                                 'message': 'ids must be integers'})
+                return
+            self._json(200, node.run_task(task, x, y, ids))
 
     return Handler
 

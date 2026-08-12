@@ -24,7 +24,7 @@ from moveit_msgs.msg import (
 from moveit_msgs.srv import GetPositionIK, ApplyPlanningScene, GetCartesianPath
 from shape_msgs.msg import SolidPrimitive
 from geometry_msgs.msg import Pose, Point, Vector3, Quaternion, PoseStamped
-from trajectory_msgs.msg import JointTrajectoryPoint
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
 
 from sensor_msgs.msg import JointState
@@ -255,7 +255,10 @@ TASKS = {
     'open_gripper',
     'close_gripper',
     'tidy',
+    'pick_selected',
     'stop',
+    'estop',
+    'reset',
 }
 
 
@@ -272,6 +275,7 @@ class State(Enum):
     RELEASE = auto()
     DONE = auto()
     ERROR = auto()
+    ESTOP = auto()
 
 
 class PickPlaceOrchestrator(Node):
@@ -342,6 +346,9 @@ class PickPlaceOrchestrator(Node):
         self._scene_cleared = False
         self._scene_obstacles: set = set()
         self._stop_requested = False
+        self._estopped = False
+        self._live_goals: list = []
+        self._selected_ids: set = set()
         self._last_result = ''
         self._log = deque(maxlen=40)
         # Bumped whenever a task is started or abandoned. Motion callbacks
@@ -352,6 +359,13 @@ class PickPlaceOrchestrator(Node):
         # pick-and-place, interleaved with whatever was commanded next.
         self._generation = 0
 
+        # Commands the arm to hold its current pose. Cancelling the action
+        # goals is not enough to halt: once a trajectory has been handed to
+        # joint_trajectory_controller it keeps executing, and an estop
+        # measured 2.54 rad of further travel after the cancel. Publishing a
+        # single-point trajectory at the present position overrides it.
+        self._halt_pub = self.create_publisher(
+            JointTrajectory, '/joint_trajectory_controller/joint_trajectory', 1)
         self._status_pub = self.create_publisher(String, '/ur3e/task_status', 10)
         self._task_srv = self.create_service(
             RunTask, '/ur3e/run_task', self._run_task_cb, callback_group=cbg)
@@ -376,6 +390,87 @@ class PickPlaceOrchestrator(Node):
 
     def _busy(self) -> bool:
         return self._cycle_active or self._recovering
+
+    def _track_goal(self, handle) -> None:
+        """Remember an accepted goal so an emergency stop can cancel it."""
+        if handle is None or not getattr(handle, 'accepted', False):
+            return
+        self._live_goals = [h for h in self._live_goals if h is not handle]
+        self._live_goals.append(handle)
+        if len(self._live_goals) > 8:
+            self._live_goals.pop(0)
+
+    def _cancel_live_goals(self) -> int:
+        """Cancel everything in flight. This is what actually halts the arm.
+
+        Cancelling the ExecuteTrajectory/MoveGroup goal stops the controller
+        mid-trajectory, which is the difference between this and `stop`: stop
+        reopens the gripper and drives back to HOME, i.e. it makes the robot
+        move more, which is the wrong response to an emergency.
+        """
+        n = 0
+        for handle in self._live_goals:
+            try:
+                handle.cancel_goal_async()
+                n += 1
+            except Exception as e:
+                self.get_logger().warn(f'could not cancel a goal: {e}')
+        self._live_goals = []
+        return n
+
+    def _halt_arm(self) -> None:
+        """Command the controller to hold exactly where the arm is now."""
+        if not self._joint_positions_known:
+            return
+        traj = JointTrajectory()
+        traj.joint_names = list(ARM_JOINTS)
+        pt = JointTrajectoryPoint()
+        pt.positions = [self._current_joint_positions.get(n, 0.0)
+                        for n in ARM_JOINTS]
+        pt.velocities = [0.0] * len(ARM_JOINTS)
+        # Nearly-now, so it supersedes whatever is executing rather than
+        # being queued behind it.
+        pt.time_from_start = Duration(sec=0, nanosec=50_000_000)
+        traj.points = [pt]
+        # Published repeatedly: a single message can land while the
+        # controller is mid-update and be superseded by the running goal.
+        for _ in range(5):
+            self._halt_pub.publish(traj)
+
+    def _engage_estop(self) -> None:
+        self._estopped = True
+        self._abandon()          # orphan every in-flight callback chain
+        n = self._cancel_live_goals()
+        self._halt_arm()
+        self._cycle_active = False
+        self._recovering = False
+        self._tidy_active = False
+        self._pending_task = None
+        self._target_id = None
+        self._last_result = 'EMERGENCY STOP'
+        self._note(f'EMERGENCY STOP - cancelled {n} goal(s), arm halted')
+        self.get_logger().error(
+            f'EMERGENCY STOP engaged, cancelled {n} in-flight goal(s)')
+        self._set_state(State.ESTOP)
+
+    def _do_reset(self) -> None:
+        """Leave the estop and return to a known state for the next command."""
+        self._estopped = False
+        self._abandon()
+        self._cycle_active = True
+        self._active_task = 'reset'
+        self._note('reset: clearing scene and homing')
+        self.get_logger().info('reset: clearing scene and homing')
+        self._scene_clear_obstacles()
+        self._scene_remove_cube(
+            then=lambda: self._move_joints(HOME_JOINTS, self._reset_done))
+
+    def _reset_done(self, success: bool) -> None:
+        self._cycle_active = False
+        self._last_result = 'reset: ready' if success else 'reset: HOME failed'
+        self._note(self._last_result)
+        self._active_task = None
+        self._set_state(State.WAITING)
 
     def _guard(self, callback):
         """Bind `callback` to the current task generation.
@@ -407,6 +502,19 @@ class PickPlaceOrchestrator(Node):
             response.message = f"unknown task '{task}'"
             return response
 
+        # Emergency stop outranks everything, including the busy check and
+        # the estop latch itself.
+        if task == 'estop':
+            self._engage_estop()
+            response.accepted = True
+            response.message = 'EMERGENCY STOP - arm halted'
+            return response
+
+        if self._estopped and task != 'reset':
+            response.accepted = False
+            response.message = 'emergency stop engaged - reset required'
+            return response
+
         # Stop is the one command that is always accepted - refusing to stop
         # because the robot is busy would be exactly backwards.
         if task == 'stop':
@@ -421,6 +529,25 @@ class PickPlaceOrchestrator(Node):
             response.accepted = False
             response.message = f'busy ({self._state.name})'
             return response
+
+        if task == 'reset':
+            self._do_reset()
+            response.accepted = True
+            response.message = 'reset: homing'
+            return response
+
+        if task == 'pick_selected':
+            ids = set(int(i) for i in request.ids)
+            if not ids:
+                response.accepted = False
+                response.message = 'select at least one cube'
+                return response
+            unknown = ids - set(self._cubes)
+            if unknown:
+                response.accepted = False
+                response.message = f'unknown cube id(s): {sorted(unknown)}'
+                return response
+            self._selected_ids = ids
 
         if task == 'pick_to':
             radius = math.hypot(request.x, request.y)
@@ -474,6 +601,8 @@ class PickPlaceOrchestrator(Node):
             'drop_zone': {'x': DROP_ZONE_X, 'y': DROP_ZONE_Y,
                           'half': DROP_ZONE_HALF},
             'target_id': self._target_id,
+            'estopped': self._estopped,
+            'selected_ids': sorted(self._selected_ids),
             'tidy': {'active': self._tidy_active, 'placed': self._tidy_done,
                      'skipped': len(self._tidy_failed)},
             'joints': joints,
@@ -503,7 +632,9 @@ class PickPlaceOrchestrator(Node):
             self._gripper(GRIPPER_OPEN, self._simple_done)
         elif task == 'close_gripper':
             self._gripper(GRIPPER_CLOSED, self._simple_done)
-        elif task == 'tidy':
+        elif task in ('tidy', 'pick_selected'):
+            if task == 'tidy':
+                self._selected_ids = set()   # every cube
             self._tidy_active = True
             self._tidy_done = 0
             self._tidy_failed.clear()
@@ -649,7 +780,8 @@ class PickPlaceOrchestrator(Node):
         """Cubes outside the drop zone that are actually reachable."""
         return sorted(
             ((i, x, y) for i, (x, y) in self._cubes.items()
-             if zone_of(x, y) == 'perfect' and not in_drop_zone(x, y)),
+             if zone_of(x, y) == 'perfect' and not in_drop_zone(x, y)
+             and (not self._selected_ids or i in self._selected_ids)),
             key=lambda c: math.hypot(c[1], c[2]))
 
     def _free_slot(self):
@@ -661,6 +793,10 @@ class PickPlaceOrchestrator(Node):
         return None
 
     def _tick(self) -> None:
+        # Latched: the arm stays exactly where the estop left it until reset.
+        if self._estopped:
+            return
+
         if self._state == State.STARTUP:
             # move_group outlives this node, so a restart inherits whatever
             # scene the previous run left behind. If that run died mid-carry
@@ -1281,6 +1417,7 @@ class PickPlaceOrchestrator(Node):
 
     def _execute_response_cb(self, future, callback) -> None:
         handle = future.result()
+        self._track_goal(handle)
         if not handle or not handle.accepted:
             self.get_logger().error('trajectory execution rejected')
             callback(False)
@@ -1340,6 +1477,7 @@ class PickPlaceOrchestrator(Node):
 
     def _joint_goal_response_cb(self, future, client, callback) -> None:
         handle = future.result()
+        self._track_goal(handle)
         if not handle or not handle.accepted:
             self.get_logger().error('Joint goal rejected')
             callback(False)
@@ -1373,6 +1511,7 @@ class PickPlaceOrchestrator(Node):
     def _goal_response_cb(self, future, callback,
                           fallback_pose: Pose | None = None) -> None:
         handle = future.result()
+        self._track_goal(handle)
         if not handle or not handle.accepted:
             self.get_logger().error('MoveIt2 goal rejected')
             if fallback_pose is not None:
@@ -1601,6 +1740,7 @@ class PickPlaceOrchestrator(Node):
 
     def _gripper_response_cb(self, future, finish) -> None:
         handle = future.result()
+        self._track_goal(handle)
         if not handle or not handle.accepted:
             finish(False, 'was rejected')
             return
