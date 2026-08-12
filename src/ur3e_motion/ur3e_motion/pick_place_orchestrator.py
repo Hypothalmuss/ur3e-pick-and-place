@@ -1579,6 +1579,24 @@ class PickPlaceOrchestrator(Node):
         # wound past a full turn gets commanded back into the planner's
         # range rather than being left there.
         joints = [math.atan2(math.sin(q), math.cos(q)) for q in joints]
+
+        # If a joint has wound past the +/-pi in joint_limits.yaml, MoveIt
+        # will not plan *from* that state and the arm cannot unwind itself -
+        # every later motion fails. The trajectory controller has no such
+        # limit, so drive straight to the normalised target through it. The
+        # wind comes from Cartesian segments: a downward tool orientation
+        # leaves wrist_3 free, and compute_cartesian_path's solution is
+        # executed exactly as returned, so it creeps a little each cycle.
+        wound = [n for n in ARM_JOINTS
+                 if abs(self._current_joint_positions.get(n, 0.0)) > math.pi]
+        if wound:
+            self.get_logger().warn(
+                f'unwinding {wound} via direct joint control '
+                f'(outside the planner limits)')
+            self._note(f'unwinding {",".join(wound)}')
+            self._send_joint_goal(joints, duration_sec, callback)
+            return
+
         if not self._moveit_client.wait_for_server(timeout_sec=1.0):
             self.get_logger().warn('MoveIt2 not available, using direct joint control')
             self._send_joint_goal(joints, duration_sec, callback)

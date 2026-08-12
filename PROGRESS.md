@@ -568,3 +568,26 @@ still read "limit 3.0" - which is why the first fix appeared not to work.)
 
 Clean run afterwards: 32/32, wrist_3 back at -0.01, and 0 ERROR states and 0 IK
 rejections underneath, where the lucky pass had 1 of each.
+
+### Where the wind actually came from, and the deadlock it caused
+Normalising IK solutions and joint goals was not enough - the next run wound
+wrist_3 to -12.59 rad, four turns. The remaining source is the Cartesian
+segments: a straight-down tool orientation leaves wrist_3 unconstrained, and
+compute_cartesian_path's solution is executed exactly as returned, so it creeps
+a little every cycle.
+
+That created a deadlock. Once a joint is outside the +/-pi in joint_limits.yaml,
+MoveIt refuses to plan *from* that state, so the arm cannot be commanded back
+into range - including to HOME. Every motion fails from then on and the only way
+out was restarting the stack.
+
+`_move_joints` now checks whether any joint has wound out of range and, if so,
+drives to the normalised target through the trajectory controller directly,
+which has no such limit. It is the one place bypassing MoveIt is correct: the
+target is the same physical pose, and the alternative is an arm that cannot move
+at all.
+
+Three consecutive full runs afterwards: 32/32, 32/32, 32/32, wrist_3 ending at
+-0.01 / -0.03 / 0.02, 0 ERROR states in all three. The third logged one unwind,
+so the safety net is demonstrably firing and recovering rather than the problem
+merely not recurring.
