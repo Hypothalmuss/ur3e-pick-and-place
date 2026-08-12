@@ -9,6 +9,17 @@ Panels:
     Name: Views
 Visualization Manager:
   Displays:
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Reach zones
+      Namespaces:
+        {}
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+        Value: /ur3e/zone_markers
+      Value: true
     - Class: rviz_default_plugins/Grid
       Name: Grid
       Plane Cell Count: 10

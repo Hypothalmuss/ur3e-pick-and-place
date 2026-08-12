@@ -500,3 +500,22 @@ unknown id are both refused.
 A `pick_selected` run that succeeds can still report "1 placed, 1 skipped" - the
 skip count picks up an entry it should not when the selection is satisfied. The
 physical outcome is correct; only the summary line is wrong.
+
+## 2026-08-12: RViz zone markers and cube spawning
+
+`/ur3e/zone_markers` (MarkerArray, transient-local so a late RViz still gets it)
+draws the reach zones as stacked translucent discs - green at ZONE_FAR with the
+red too_close disc on top, so the middle reads as an annulus without building
+one - plus an orange outline at the far limit, the red drop-zone square and the
+four slot footprints. `view_robot.rviz` has the display; launch with
+`./run_sim.sh gui rviz`.
+
+`spawn_cube` drops a new cube at a free spot in the perfect zone, clear of the
+drop zone and 140 mm from any existing cube. Its SDF matches the pre-placed
+cubes exactly (same mass, inertia and kp=1e5 contact) - a spawned cube that
+behaved differently would make every later test ambiguous. Button on the
+dashboard; the task returns immediately rather than occupying the state machine.
+
+Verified: 8 markers on the topic (3 zones, drop zone, 4 slots); a spawned cube
+appears in Gazebo as cube_spawned_1 and is detected as a new tracked id in the
+perfect zone.

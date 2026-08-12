@@ -6,9 +6,11 @@
 #
 # Usage:  ./run_sim.sh          # headless gzserver (most stable)
 #         ./run_sim.sh gui      # also open the Gazebo GUI window
+#         ./run_sim.sh gui rviz # and RViz, showing the reach zones
 # NOTE: no 'set -u' - ROS setup.bash references unbound vars and would abort.
 WS=/home/eagletn3/Downloads/new_ur3e
 GUI="${1:-headless}"
+RVIZ="${2:-norviz}"
 
 echo "[run_sim] cleaning up any previous run..."
 for p in bringup.launch move_group.launch motion.launch gzserver gzclient \
@@ -52,7 +54,8 @@ grep -q "Successfully spawned" /tmp/ur3e_bringup.log 2>/dev/null \
   || { echo "[run_sim]   ERROR: robot did not spawn - see /tmp/ur3e_bringup.log"; exit 1; }
 
 echo "[run_sim] launching MoveIt2..."
-setsid nohup ros2 launch ur3e_sim_bringup move_group.launch.py launch_rviz:=false \
+RVIZ_ON=false; [ "$RVIZ" = "rviz" ] && RVIZ_ON=true
+setsid nohup ros2 launch ur3e_sim_bringup move_group.launch.py launch_rviz:=$RVIZ_ON \
   > /tmp/ur3e_movegroup.log 2>&1 </dev/null & disown
 for i in $(seq 1 45); do grep -q "You can start planning now" /tmp/ur3e_movegroup.log 2>/dev/null && break; sleep 2; done
 echo "[run_sim]   move_group ready"

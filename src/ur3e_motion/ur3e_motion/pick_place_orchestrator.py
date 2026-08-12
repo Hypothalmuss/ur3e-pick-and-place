@@ -7,6 +7,7 @@ import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 
 from control_msgs.action import GripperCommand
 from moveit_msgs.action import MoveGroup, ExecuteTrajectory
@@ -28,7 +29,9 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
 
 from sensor_msgs.msg import JointState
-from std_msgs.msg import String
+from std_msgs.msg import String, ColorRGBA
+from visualization_msgs.msg import Marker, MarkerArray
+from gazebo_msgs.srv import SpawnEntity
 from ur3e_msgs.msg import DetectedObjectArray
 from ur3e_msgs.srv import RunTask
 
@@ -169,6 +172,25 @@ DROP_SLOTS = [
 SLOT_OCCUPIED_RADIUS = 0.055
 
 
+# Matches the cubes in ur3e_workcell.world: same size, mass, inertia and the
+# soft kp=1e5 contact. A spawned cube that behaved differently from the
+# pre-placed ones would make every test result ambiguous.
+CUBE_SDF = """<?xml version="1.0"?>
+<sdf version="1.6"><model name="spawned_cube"><link name="link">
+  <inertial><mass>0.15</mass><inertia>
+    <ixx>9.0e-5</ixx><ixy>0</ixy><ixz>0</ixz>
+    <iyy>9.0e-5</iyy><iyz>0</iyz><izz>9.0e-5</izz></inertia></inertial>
+  <visual name="visual"><geometry><box><size>0.06 0.06 0.06</size></box></geometry>
+    <material><ambient>1 0.6 0 1</ambient><diffuse>1 0.6 0 1</diffuse></material></visual>
+  <collision name="collision"><geometry><box><size>0.06 0.06 0.06</size></box></geometry>
+    <surface>
+      <friction><ode><mu>3.0</mu><mu2>3.0</mu2></ode></friction>
+      <contact><ode><kp>1e5</kp><kd>1.0</kd>
+        <max_vel>0.01</max_vel><min_depth>0.0</min_depth></ode></contact>
+    </surface></collision>
+</link></model></sdf>"""
+
+
 def in_drop_zone(x: float, y: float) -> bool:
     return (abs(x - DROP_ZONE_X) <= DROP_ZONE_HALF
             and abs(y - DROP_ZONE_Y) <= DROP_ZONE_HALF)
@@ -259,6 +281,7 @@ TASKS = {
     'stop',
     'estop',
     'reset',
+    'spawn_cube',
 }
 
 
@@ -366,11 +389,22 @@ class PickPlaceOrchestrator(Node):
         # single-point trajectory at the present position overrides it.
         self._halt_pub = self.create_publisher(
             JointTrajectory, '/joint_trajectory_controller/joint_trajectory', 1)
+        # Zones/drop-zone drawn for RViz. Latched QoS so a late-joining RViz
+        # still gets them without waiting for the next publish.
+        self._marker_pub = self.create_publisher(
+            MarkerArray, '/ur3e/zone_markers',
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                       reliability=ReliabilityPolicy.RELIABLE))
+        self._spawn_client = self.create_client(
+            SpawnEntity, '/spawn_entity', callback_group=cbg)
+        self._spawn_seq = 0
         self._status_pub = self.create_publisher(String, '/ur3e/task_status', 10)
         self._task_srv = self.create_service(
             RunTask, '/ur3e/run_task', self._run_task_cb, callback_group=cbg)
         self._status_timer = self.create_timer(
             0.25, self._publish_status, callback_group=cbg)
+        self._marker_timer = self.create_timer(
+            2.0, self._publish_markers, callback_group=cbg)
 
     def _set_state(self, state: State) -> None:
         self._state = state
@@ -380,6 +414,111 @@ class PickPlaceOrchestrator(Node):
     # ------------------------------------------------------------------
     # Dashboard task interface
     # ------------------------------------------------------------------
+
+    def _publish_markers(self) -> None:
+        """Draw the reach zones and drop zone for RViz.
+
+        Discs rather than rings, stacked by radius with the nearer zone drawn
+        on top, so the middle reads as an annulus without needing to build one.
+        """
+        def disc(mid, radius, rgba, z):
+            m = Marker()
+            m.header.frame_id = 'base_link'
+            m.ns, m.id, m.type, m.action = 'zones', mid, Marker.CYLINDER, Marker.ADD
+            m.pose.orientation.w = 1.0
+            m.pose.position.z = z
+            m.scale.x = m.scale.y = 2.0 * radius
+            m.scale.z = 0.001
+            m.color = ColorRGBA(r=rgba[0], g=rgba[1], b=rgba[2], a=rgba[3])
+            return m
+
+        arr = MarkerArray()
+        arr.markers.append(disc(0, ZONE_FAR, (0.85, 0.55, 0.10, 0.18), 0.001))
+        arr.markers.append(disc(1, ZONE_NEAR + (ZONE_FAR - ZONE_NEAR), 
+                                (0.15, 0.75, 0.40, 0.0), 0.0))
+        # perfect annulus = green disc at ZONE_FAR with the too_close disc on top
+        arr.markers[0] = disc(0, ZONE_FAR, (0.15, 0.75, 0.40, 0.22), 0.001)
+        arr.markers[1] = disc(1, ZONE_NEAR, (0.85, 0.20, 0.15, 0.30), 0.002)
+
+        outer = Marker()
+        outer.header.frame_id = 'base_link'
+        outer.ns, outer.id = 'zones', 2
+        outer.type, outer.action = Marker.LINE_STRIP, Marker.ADD
+        outer.pose.orientation.w = 1.0
+        outer.scale.x = 0.004
+        outer.color = ColorRGBA(r=0.85, g=0.35, b=0.10, a=0.9)
+        outer.points = [
+            Point(x=ZONE_FAR * math.cos(t * math.pi / 32),
+                  y=ZONE_FAR * math.sin(t * math.pi / 32), z=0.003)
+            for t in range(65)]
+        arr.markers.append(outer)
+
+        box = Marker()
+        box.header.frame_id = 'base_link'
+        box.ns, box.id = 'drop_zone', 0
+        box.type, box.action = Marker.LINE_STRIP, Marker.ADD
+        box.pose.orientation.w = 1.0
+        box.scale.x = 0.006
+        box.color = ColorRGBA(r=0.9, g=0.1, b=0.1, a=1.0)
+        h = DROP_ZONE_HALF
+        box.points = [Point(x=DROP_ZONE_X + dx, y=DROP_ZONE_Y + dy, z=0.004)
+                      for dx, dy in ((-h, -h), (h, -h), (h, h), (-h, h), (-h, -h))]
+        arr.markers.append(box)
+
+        for i, (sx, sy) in enumerate(DROP_SLOTS):
+            m = Marker()
+            m.header.frame_id = 'base_link'
+            m.ns, m.id = 'slots', i
+            m.type, m.action = Marker.CYLINDER, Marker.ADD
+            m.pose.orientation.w = 1.0
+            m.pose.position.x, m.pose.position.y = sx, sy
+            m.pose.position.z = 0.004
+            m.scale.x = m.scale.y = OBJECT_SIZE
+            m.scale.z = 0.001
+            m.color = ColorRGBA(r=0.9, g=0.4, b=0.1, a=0.35)
+            arr.markers.append(m)
+
+        self._marker_pub.publish(arr)
+
+    def _spawn_cube(self) -> None:
+        """Drop a new cube at a free spot in the perfect zone."""
+        if not self._spawn_client.service_is_ready():
+            self._last_result = 'spawn: /spawn_entity unavailable'
+            self._note(self._last_result)
+            return
+
+        spot = self._free_spawn_spot()
+        if spot is None:
+            self._last_result = 'spawn: no free spot in the perfect zone'
+            self._note(self._last_result)
+            return
+
+        self._spawn_seq += 1
+        name = f'cube_spawned_{self._spawn_seq}'
+        x, y = spot
+        req = SpawnEntity.Request()
+        req.name = name
+        req.xml = CUBE_SDF
+        req.initial_pose = Pose(position=Point(x=x, y=y, z=OBJECT_SIZE / 2.0),
+                                orientation=Quaternion(w=1.0))
+        self._spawn_client.call_async(req)
+        self._last_result = f'spawned {name} at ({x:.2f}, {y:.2f})'
+        self._note(self._last_result)
+        self.get_logger().info(self._last_result)
+
+    def _free_spawn_spot(self):
+        """A spot in the perfect zone, clear of the drop zone and other cubes."""
+        for ring in (0.38, 0.44, 0.30):
+            for k in range(12):
+                ang = -1.1 + k * (2.2 / 11.0)
+                x, y = ring * math.cos(ang), ring * math.sin(ang)
+                if zone_of(x, y) != 'perfect' or in_drop_zone(x, y):
+                    continue
+                if any(math.hypot(x - cx, y - cy) < 0.14
+                       for cx, cy in self._cubes.values()):
+                    continue
+                return x, y
+        return None
 
     def _note(self, text: str) -> None:
         """Append to the ring buffer the dashboard shows as a live feed."""
@@ -528,6 +667,12 @@ class PickPlaceOrchestrator(Node):
         if self._busy() or self._pending_task is not None:
             response.accepted = False
             response.message = f'busy ({self._state.name})'
+            return response
+
+        if task == 'spawn_cube':
+            self._spawn_cube()
+            response.accepted = True
+            response.message = self._last_result
             return response
 
         if task == 'reset':
