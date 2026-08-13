@@ -592,7 +592,7 @@ Three consecutive full runs afterwards: 32/32, 32/32, 32/32, wrist_3 ending at
 so the safety net is demonstrably firing and recovering rather than the problem
 merely not recurring.
 
-## 2026-08-12: direct transfer between picks - implemented, NOT yet effective
+## 2026-08-12: direct transfer between picks - WORKING (see correction below)
 
 Skipping the HOME trip between picks of a multi-cube sweep is in
 `_finish` behind a `direct_transfer` parameter (default true), guarded by
@@ -642,3 +642,15 @@ separate intermittent approach-planning failure, not stacking.)
 `full_system_test.py` checked that cubes ended up *inside* the square but never
 that they were in *different* slots, so three cubes stacked at slot 1 passed
 32/32. A closest-pair check is now part of the suite.
+
+### Correction: direct transfer was working all along
+The "does not fire" conclusion above was a measurement error, not a fact. The
+skip is announced with `_note()`, which appends to the dashboard's activity ring
+buffer and does **not** call the ROS logger - so grepping
+`/tmp/ur3e_motion.log` for it was always going to return zero whether it fired
+or not. Checked through `/api/state`, where that message actually goes, a
+three-cube sweep shows two skip events: HOME is skipped for the first two picks
+and kept for the last, exactly as designed.
+
+Worth remembering as a general point: absence of a log line is only evidence if
+you have confirmed the code path writes to the log you are reading.
