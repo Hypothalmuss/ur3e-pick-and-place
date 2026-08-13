@@ -7,11 +7,11 @@ drop zone — either all of them, or only the ones you select.
 
 ROS 2 Humble · Gazebo Classic 11 · MoveIt 2
 
-![demo](demo/full_demo.webm)
+[![watch the demo](demo/demo_thumbnail.png)](demo/full_demo.mp4)
 
-**Demos:** [`demo/full_demo.webm`](demo/full_demo.webm) — the dashboard driving a
-full multi-cube sweep. [`demo/pick_and_place.mp4`](demo/pick_and_place.mp4) — an
-earlier single-cube cycle from the overhead camera.
+*RViz and the dashboard side by side through a full multi-cube sweep —
+[click to play](demo/full_demo.mp4). An earlier single-cube cycle from the
+overhead camera is in [`demo/pick_and_place.mp4`](demo/pick_and_place.mp4).*
 
 ---
 
