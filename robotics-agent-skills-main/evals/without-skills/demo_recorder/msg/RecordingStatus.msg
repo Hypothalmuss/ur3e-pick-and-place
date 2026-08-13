@@ -1,6 +1,0 @@
-builtin_interfaces/Time stamp
-bool is_recording
-string task_name
-string operator_name
-uint32 episode_count
-uint32 current_timestep

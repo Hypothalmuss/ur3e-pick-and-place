@@ -11,3 +11,4 @@ __pycache__/
 frames_*.gv
 frames_*.pdf
 MEMORY.md
+.claude/
